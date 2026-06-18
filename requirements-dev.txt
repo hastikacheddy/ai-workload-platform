@@ -5,3 +5,4 @@ pytest-cov==5.0.0
 bandit==1.7.10
 semgrep==1.90.0
 radon==6.0.1
+matplotlib==3.9.2   # scripts/evaluate.py (forecast-vs-actual chart)
