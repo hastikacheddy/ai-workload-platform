@@ -87,7 +87,9 @@ def _load_checkpoint(model, optimizer, device):
     so all workers resume from an identical state — the recovery guarantee."""
     if not os.path.exists(CKPT_PATH):
         return 0
-    ckpt = torch.load(CKPT_PATH, map_location=device)
+    # weights_only=True restricts unpickling to tensors/primitives — the secure
+    # way to load a checkpoint (no arbitrary code execution on load).
+    ckpt = torch.load(CKPT_PATH, map_location=device, weights_only=True)
     model.module.load_state_dict(ckpt["model"])
     optimizer.load_state_dict(ckpt["optim"])
     return ckpt["epoch"] + 1

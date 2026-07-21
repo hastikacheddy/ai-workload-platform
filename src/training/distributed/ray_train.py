@@ -69,7 +69,8 @@ def train_loop_per_worker(cfg: dict) -> None:
     ckpt = ray.train.get_checkpoint()
     if ckpt:
         with ckpt.as_directory() as d:
-            state = torch.load(os.path.join(d, "state.pt"))
+            # weights_only=True → safe checkpoint load (no code execution on load)
+            state = torch.load(os.path.join(d, "state.pt"), weights_only=True)
             model.load_state_dict(state["model"])
             optimizer.load_state_dict(state["optim"])
             start_epoch = state["epoch"] + 1
