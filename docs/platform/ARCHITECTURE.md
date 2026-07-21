@@ -134,7 +134,7 @@ LightGBM forecast must never sit on an A100. See [COST_MODEL](COST_MODEL.md).
 
 ## 5. What is real vs. simulated (honesty ledger)
 
-Staff work is judged partly on knowing the difference and stating it.
+Being explicit about the line between the two is part of doing this honestly.
 
 | Component | Status | Notes |
 |---|---|---|

@@ -1,8 +1,8 @@
 # Architecture Decision Records
 
 Short, dated records of the decisions that shaped the platform — the *why*, the
-alternatives weighed, and the trade-off accepted. Staff engineering is largely
-the act of making these legible.
+alternatives weighed, and the trade-off accepted. Good architecture is largely the
+act of making these decisions legible.
 
 Format: [MADR](https://adr.github.io/madr/)-lite — Context · Decision · Consequences · Alternatives.
 

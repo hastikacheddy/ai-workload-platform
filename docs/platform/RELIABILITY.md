@@ -1,7 +1,7 @@
 # AI Platform — Reliability Design Document
 
-> The document a Staff engineer is expected to write before an incident, not
-> during one. It states, for every component, **what happens when it fails** —
+> The document you write before an incident, not during one. It states, for every
+> component, **what happens when it fails** —
 > the detection signal, the automatic response, the blast radius, and the manual
 > fallback — and it names the code or manifest that makes the claim true.
 
@@ -36,7 +36,7 @@ priority preemption*. Each step is a smaller promise kept, never a 500.
 | 9 | **CUDA OOM** | pod OOMKilled | restart; if persistent, lower `--gpu-memory-utilization` | one replica | tune vLLM args |
 | 10 | **Whole region down** | health checks | out of scope for single-region MVP | total | see DISASTER_RECOVERY multi-region |
 
-Rows 1–3, 5, 7 are the ones an interviewer will push on. Note which are **already
+Rows 1–3, 5, 7 are the ones worth scrutinising hardest. Note which are **already
 enforced in code** below.
 
 ---

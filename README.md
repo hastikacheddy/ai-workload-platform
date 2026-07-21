@@ -1,10 +1,11 @@
-# NYC Taxi Demand Forecasting — End-to-End MLOps Platform
+# AI Platform — Cloud-Native Infrastructure for Production ML & LLM Workloads
 
-> A production-grade system that forecasts **NYC yellow-taxi trip demand** (daily &
-> hourly) and ships it the way a real ML team would: leakage-free modelling,
-> calibrated risk intervals, a model registry with an automated promotion gate, a
-> closed drift-retraining loop, a hardened serving API, Kubernetes deploy, and a
-> six-stage CI/CD pipeline with security scanning and image signing.
+> A Kubernetes-native platform for running AI workloads end to end: a
+> framework-neutral model registry + self-service deployment API, CPU **and** GPU
+> serving (LightGBM and vLLM), distributed training, inference benchmarking,
+> FinOps, and full observability/security — demonstrated on a real workload (NYC
+> yellow-taxi demand forecasting, leakage-free with calibrated risk bands) plus an
+> LLM operations copilot grounded in that workload's own forecast + monitoring data.
 
 <p>
 <a href="https://github.com/hastikacheddy/nyc-taxi-demand-forecasting/actions/workflows/mlops_pipeline.yaml"><img alt="CI" src="https://github.com/hastikacheddy/nyc-taxi-demand-forecasting/actions/workflows/mlops_pipeline.yaml/badge.svg"></a>
@@ -22,12 +23,12 @@ data and graded against an MLOps maturity framework.
 ---
 
 ## Contents
-- [AI Platform layer (Staff AI-Infra scope)](#ai-platform-layer-staff-ai-infra-scope) · [Results](#results) · [What makes it production-grade](#what-makes-this-production-grade-not-a-notebook) · [Architecture](#architecture)
+- [AI Platform layer](#ai-platform-layer) · [Results](#results) · [What makes it production-grade](#what-makes-this-production-grade-not-a-notebook) · [Architecture](#architecture)
 - [Capabilities](#capabilities) · [Engineering decisions](#engineering-decisions-worth-calling-out) · [Quickstart](#quickstart) · [Repo layout](#repository-layout)
 
 ---
 
-## AI Platform layer (Staff AI-Infra scope)
+## AI Platform layer
 
 Beyond serving one model well, the repo now includes an **internal AI platform
 abstraction** — one framework-neutral control plane that registers, deploys, and
@@ -47,24 +48,26 @@ internally on top of Vertex AI / SageMaker / Databricks Model Serving.
               Observability · FinOps · Reliability · Multi-tenancy
 ```
 
-**The eight AI-infra gaps, now covered — each runnable and tested:**
+**Eight infrastructure capabilities, each runnable and tested:**
 
 | Gap | What was built | Where |
 |---|---|---|
-| **Platform APIs** | Register / deploy / infer / cost control plane (11 tests) | [`src/platform/`](src/platform/) · [ARCHITECTURE](docs/platform/ARCHITECTURE.md) |
+| **Platform APIs** | Register / deploy / infer / cost control plane + **declarative `workload.yaml`** (any workload → CPU/GPU pool) | [`src/platform/`](src/platform/) · [ARCHITECTURE](docs/platform/ARCHITECTURE.md) |
 | **K8s-native serving** | KServe `InferenceService` (CPU + vLLM GPU), canary, autoscale | [`kubernetes/serving/`](kubernetes/serving/) |
 | **LLM serving** | vLLM backend (OpenAI-compatible), GPU pool | [`backends.py`](src/platform/backends.py) · [ADR-002](docs/adr/002-why-vllm.md) |
 | **GPU infrastructure** | Taints/tolerations, node affinity, quotas, priority classes | [`gpu-*.yaml`](kubernetes/serving/) · [GPU_DESIGN](docs/platform/GPU_DESIGN.md) |
-| **Inference optimization** | p50/p95/p99 + throughput + GPU-util benchmark (vLLM vs HF) | [`benchmarks/`](benchmarks/) |
+| **Inference optimization** | p50/p95/p99 + throughput + GPU-util, **and TTFT + tokens/sec** for streaming LLMs | [`benchmarks/`](benchmarks/) |
 | **Distributed compute** | Data-parallel trainer + PyTorch DDP + Ray Train (checkpoint/recovery, 5 tests) | [`src/training/distributed/`](src/training/distributed/) |
 | **Reliability + multi-tenancy** | Failure catalogue, degradation ladders, canary fallback, GPU quotas | [RELIABILITY](docs/platform/RELIABILITY.md) |
 | **Cloud architecture** | Azure AKS + GPU pool + ACR + Blob + Key Vault + Monitor (Terraform, `validate` passes) | [`infra/azure/`](infra/azure/) · [ADR-001](docs/adr/001-why-kubernetes.md) |
 
 Plus **FinOps** (cost/request, cost/model, idle-GPU detection — [`finops.py`](src/platform/finops.py), [COST_MODEL](docs/platform/COST_MODEL.md)) and a
 full **LLMOps** layer (prompt registry, guardrails, embeddings, vector store, RAG,
-eval — [`src/llmops/`](src/llmops/), 12 tests). Design judgment is recorded as
-[Architecture Decision Records](docs/adr/) and a Staff-level [reliability](docs/platform/RELIABILITY.md) /
-[scaling](docs/platform/SCALING.md) / [DR](docs/platform/DISASTER_RECOVERY.md) doc set.
+eval — [`src/llmops/`](src/llmops/)) including a **Taxi Ops Copilot** that answers
+operator questions grounded in the forecasting workload's own demand data
+([`ops_copilot.py`](src/llmops/ops_copilot.py)). Design decisions are recorded as
+[Architecture Decision Records](docs/adr/) and a full [reliability](docs/platform/RELIABILITY.md) /
+[scaling](docs/platform/SCALING.md) / [DR](docs/platform/DISASTER_RECOVERY.md) design-doc set.
 
 > **Honesty ledger:** the platform control plane, backends, canary/fallback,
 > benchmark, FinOps, distributed trainer, and LLMOps all **run and are tested**
@@ -102,7 +105,7 @@ commuter rhythm (overnight trough, AM/PM peaks) with ~8% error.*
 ## What makes this *production-grade*, not a notebook
 
 The single most important engineering decision in the repo, and the one I'd lead
-with in an interview:
+with:
 
 > **The original notebook model was a *nowcast*, not a forecast — and I caught it.**
 
@@ -277,7 +280,7 @@ docker compose -f docker-compose.airflow.yml up -d --build   # http://localhost:
 | [`benchmarks/`](benchmarks/) | inference-optimization harness (p50/p95/p99, throughput, GPU util) |
 | [`kubernetes/serving/`](kubernetes/serving/) | KServe (CPU + vLLM GPU) + GPU scheduling (taints, quotas, priorities) |
 | [`infra/azure/`](infra/azure/) | Azure AKS + GPU pool + ACR + Blob + Key Vault Terraform |
-| [`docs/platform/`](docs/platform/), [`docs/adr/`](docs/adr/) | Staff design docs (GPU/reliability/scaling/cost/DR/security) + ADRs |
+| [`docs/platform/`](docs/platform/), [`docs/adr/`](docs/adr/) | Platform design docs (GPU/reliability/scaling/cost/DR/security) + ADRs |
 | [`src/forecasting/`](src/forecasting/) | leakage-free forecaster, training, serving engine, VaR |
 | [`src/inference/`](src/inference/) | risk/VaR, input validation, model-integrity guard |
 | [`src/pipelines/`](src/pipelines/) | idempotent DAG task logic (Airflow-free, fully testable) |

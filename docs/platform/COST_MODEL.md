@@ -91,5 +91,5 @@ The platform treats cost like latency: a labelled Prometheus series, an SLO-styl
 budget, and an alert when a model's cost/request regresses (e.g. a config change
 drops vLLM utilization). "This model got 3× more expensive last week" should page
 the same way "this model got 3× slower" does. That framing — cost as an
-observable, not a monthly surprise — is the FinOps posture Staff roles are hired
-to bring.
+observable, not a monthly surprise — is the FinOps posture a mature platform
+brings.

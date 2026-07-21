@@ -1,7 +1,7 @@
 """
 FinOps — cost attribution and waste detection for the platform.
 
-AI-infra spend is dominated by *idle accelerators*, not compute you use, so the
+AI-infrastructure spend is dominated by *idle accelerators*, not compute you use, so the
 platform treats cost as a first-class, per-model observable (see
 docs/platform/COST_MODEL.md). This module turns the deployment state the control
 plane already tracks — pool, GPU type/count, replicas — plus request counts into:
