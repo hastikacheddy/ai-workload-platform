@@ -26,6 +26,7 @@ from src.llmops.embeddings import HashingEmbedder, embed
 from src.llmops.vector_store import InMemoryVectorStore, Document
 from src.llmops.rag import RAGService
 from src.llmops.evaluation import EvaluationSuite, EvalCase
+from src.llmops.ops_copilot import TaxiOpsCopilot
 
 __all__ = [
     "PromptRegistry", "PromptTemplate",
@@ -34,4 +35,5 @@ __all__ = [
     "InMemoryVectorStore", "Document",
     "RAGService",
     "EvaluationSuite", "EvalCase",
+    "TaxiOpsCopilot",
 ]

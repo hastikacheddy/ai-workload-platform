@@ -24,7 +24,15 @@ everything *around* the model.
 | Embeddings (hashing, dep-free) | `embeddings.py` | sentence-transformers / embedding API |
 | Vector Store (cosine, in-memory) | `vector_store.py` | pgvector / Qdrant / Pinecone |
 | RAG Service | `rag.py` | inject the real store + vLLM LLM |
+| **Taxi Ops Copilot** (grounded in own data) | `ops_copilot.py` | swap stub LLM → platform vLLM backend |
 | Evaluation (deterministic scorers) | `evaluation.py` | add an LLM-judge `Scorer` |
+
+The **Ops Copilot** (`ops_copilot.py`) is what makes the LLM *coherent* with the
+rest of the repo: it indexes real facts from the forecasting workload's demand
+history (`data/daily_demand.csv`) and answers operator questions ("why did demand
+spike on X?", "what's the average daily demand?") strictly from those grounded
+facts — so it's an assistant over the platform's own data, not GenAI bolted on.
+Run it: `python -m src.llmops.ops_copilot`.
 
 ## Run it
 
