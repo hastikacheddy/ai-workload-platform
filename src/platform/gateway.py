@@ -11,7 +11,9 @@ model container directly:
     GET  /v1/deployments            list deployments
     GET  /v1/deployments/{id}       one deployment's status/health
     POST /v1/deployments/{id}/promote   promote canary → stable
+    POST /v1/workloads              apply a declarative workload spec (YAML)
     POST /v1/inference              route an inference to a live deployment
+    GET  /v1/costs                  cost attribution (FinOps)
     GET  /v1/metrics                Prometheus scrape
 
 Auth mirrors src/serving/api.py: an optional X-API-Key with a constant-time
@@ -28,7 +30,7 @@ import secrets
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Security, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Security, status
 from fastapi.security.api_key import APIKeyHeader
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from pydantic import BaseModel, Field
@@ -38,6 +40,7 @@ from src.platform.backends import BackendUnavailable
 from src.platform.deployments import DeploymentManager
 from src.platform.finops import CostModel
 from src.platform.registry import Framework, ModelRegistry, ResourceProfile
+from src.platform.workloads import WorkloadManager, WorkloadSpec, WorkloadError
 
 # ── Telemetry ──────────────────────────────────────────────────────
 INFER_REQUESTS = Counter(
@@ -206,6 +209,31 @@ def promote(deployment_id: str) -> dict:
         raise HTTPException(status_code=404, detail=str(e))
     _refresh_gauges()
     return dep.to_public()
+
+
+# ── Workloads (declarative) ────────────────────────────────────────
+@app.post("/v1/workloads", status_code=201, dependencies=[Depends(require_api_key)])
+async def apply_workload(request: Request) -> dict:
+    """Apply a declarative workload spec. Accepts a YAML body (Content-Type
+    text/plain or application/yaml) or a JSON object. Registers the model version
+    and reconciles a deployment — the 'deploy any AI workload' entrypoint."""
+    raw = (await request.body()).decode("utf-8").strip()
+    if not raw:
+        raise HTTPException(status_code=422, detail="empty workload spec")
+    try:
+        # try JSON first (application/json), fall back to YAML
+        ctype = request.headers.get("content-type", "")
+        if "json" in ctype:
+            import json
+            spec = WorkloadSpec.from_dict(json.loads(raw))
+        else:
+            spec = WorkloadSpec.from_yaml(raw)
+        # build from current globals so state stays consistent
+        return WorkloadManager(registry, deployments).apply(spec)
+    except WorkloadError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # ── Inference ──────────────────────────────────────────────────────
