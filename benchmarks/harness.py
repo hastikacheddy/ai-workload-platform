@@ -2,7 +2,7 @@
 Inference benchmark harness — the measurement engine.
 
 Backend-agnostic on purpose: it hammers *any* callable that maps a request to a
-response and reports the numbers Staff engineers actually argue over — p50/p95/p99
+response and reports the numbers that decide production serving cost and latency — p50/p95/p99
 latency, throughput under concurrency, and (when a GPU is present) utilization.
 
 The methodology is the deliverable. Point it at a vLLM endpoint and it produces
@@ -216,6 +216,128 @@ def benchmark(
         cold_start_ms=round(cold_start_ms, 2) if cold_start_ms is not None else None,
         gpu=gpu.summary(),
     )
+
+
+# ── Streaming (LLM) benchmark: TTFT + tokens/sec ───────────────────
+@dataclass
+class StreamResult:
+    label: str
+    n_requests: int
+    concurrency: int
+    errors: int
+    wall_time_s: float
+    tokens_per_sec: float                 # aggregate decode throughput under load
+    ttft_ms: Dict[str, float]             # time-to-first-token percentiles
+    total_ms: Dict[str, float]            # full-generation latency percentiles
+    gpu: Dict[str, Optional[float]] = field(default_factory=dict)
+
+    def to_row(self) -> str:
+        t, tot = self.ttft_ms, self.total_ms
+        g = self.gpu.get("util_mean_pct")
+        gpu = f"{g:.0f}%" if g is not None else "N/A"
+        return (f"| {self.label} | {t['p50']:.0f} | {t['p95']:.0f} | {t['p99']:.0f} "
+                f"| {self.tokens_per_sec:.0f} | {tot['p50']:.0f} | {gpu} | {self.errors} |")
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+STREAM_TABLE_HEADER = (
+    "| Config | TTFT p50 (ms) | TTFT p95 (ms) | TTFT p99 (ms) | Throughput (tok/s) "
+    "| Total p50 (ms) | GPU util | Errors |\n"
+    "|---|---:|---:|---:|---:|---:|---:|---:|"
+)
+
+# stream_fn(request) -> iterator of token strings (one item per generated token)
+StreamFn = Callable[[Request], Any]
+
+
+def benchmark_streaming(
+    stream: StreamFn,
+    request: Request,
+    *,
+    label: str,
+    n_requests: int = 100,
+    concurrency: int = 8,
+    warmup: int = 5,
+) -> StreamResult:
+    """Drive a streaming (token-by-token) backend and report the metrics that
+    define LLM-serving quality: TTFT (time to first token — the latency a user
+    feels) and aggregate tokens/sec (decode throughput — what sets $/token)."""
+    for _ in range(max(0, warmup)):                    # warm up (discarded)
+        try:
+            for _tok in stream(request):
+                pass
+        except Exception:
+            pass
+
+    ttfts: List[float] = []
+    totals: List[float] = []
+    token_counts: List[int] = []
+    errors = 0
+    lock = threading.Lock()
+
+    def one(_i: int) -> None:
+        nonlocal errors
+        start = time.perf_counter()
+        first_at: Optional[float] = None
+        n_tok = 0
+        try:
+            for _tok in stream(request):
+                if first_at is None:
+                    first_at = time.perf_counter()
+                n_tok += 1
+            end = time.perf_counter()
+            if first_at is None:                       # produced nothing
+                with lock:
+                    errors += 1
+                return
+            with lock:
+                ttfts.append((first_at - start) * 1000)
+                totals.append((end - start) * 1000)
+                token_counts.append(n_tok)
+        except Exception:
+            with lock:
+                errors += 1
+
+    with GpuSampler() as gpu:
+        wall_start = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            for f in as_completed([pool.submit(one, i) for i in range(n_requests)]):
+                f.result()
+        wall = time.perf_counter() - wall_start
+
+    ttfts.sort()
+    totals.sort()
+    total_tokens = sum(token_counts)
+    return StreamResult(
+        label=label,
+        n_requests=n_requests,
+        concurrency=concurrency,
+        errors=errors,
+        wall_time_s=round(wall, 4),
+        tokens_per_sec=round(total_tokens / wall, 1) if wall > 0 else 0.0,
+        ttft_ms={"p50": round(_percentile(ttfts, 50), 1),
+                 "p95": round(_percentile(ttfts, 95), 1),
+                 "p99": round(_percentile(ttfts, 99), 1)},
+        total_ms={"p50": round(_percentile(totals, 50), 1),
+                  "p95": round(_percentile(totals, 95), 1),
+                  "p99": round(_percentile(totals, 99), 1)},
+        gpu=gpu.summary(),
+    )
+
+
+def compare_streaming(results: List["StreamResult"]) -> str:
+    lines = [STREAM_TABLE_HEADER] + [r.to_row() for r in results]
+    if len(results) == 2:
+        before, after = results
+        if before.ttft_ms["p50"] and after.tokens_per_sec and before.tokens_per_sec:
+            ttft = before.ttft_ms["p50"] / max(after.ttft_ms["p50"], 1e-9)
+            tput = after.tokens_per_sec / max(before.tokens_per_sec, 1e-9)
+            lines.append("")
+            lines.append(f"**{after.label} vs {before.label}:** "
+                         f"~{ttft:.1f}× faster TTFT, ~{tput:.1f}× higher token throughput.")
+    return "\n".join(lines)
 
 
 def compare(results: List[BenchmarkResult]) -> str:

@@ -1,6 +1,6 @@
 # `benchmarks/` — Inference optimization
 
-Measures the numbers an AI-infra role is expected to obsess over — **p50 / p95 /
+Measures the numbers that decide production serving cost and latency — **p50 / p95 /
 p99 latency, throughput, and GPU utilization** — and renders a before/after table
 comparing a baseline (vanilla HF Transformers) against an optimized server (vLLM).
 
@@ -18,6 +18,9 @@ three ways:
 ```bash
 # zero-dependency self-demo (CI-safe, no GPU)
 python -m benchmarks.run_benchmark --demo --requests 200 --concurrency 16
+
+# LLM streaming metrics — TTFT (time-to-first-token) + tokens/sec, vanilla vs vLLM
+python -m benchmarks.run_benchmark --stream-demo --requests 100 --concurrency 8
 
 # real comparison: point 'before' at a vanilla/TGI server, 'after' at vLLM
 python -m benchmarks.run_benchmark \
@@ -41,7 +44,7 @@ python -m benchmarks.run_benchmark \
 > real. The harness reports GPU utilization as `N/A` here precisely because there is
 > no GPU — it never fabricates a number.
 
-## Why these metrics (the interview answer)
+## Why these metrics
 
 - **p99, not mean** — tail latency is what users feel and what SLOs are written
   against; a good mean can hide a terrible p99 from queuing.
@@ -53,3 +56,8 @@ python -m benchmarks.run_benchmark \
 - **cold start, reported separately** — the first request (weights + CUDA context)
   is 30–120 s and must not pollute steady-state percentiles; it's its own number
   because it drives the scale-to-zero vs min-replicas decision ([SCALING](../docs/platform/SCALING.md)).
+- **TTFT + tokens/sec for LLMs** (`--stream-demo`, `benchmark_streaming`) — for a
+  streaming LLM, total latency hides the two numbers that matter: **time-to-first-token**
+  (what the user feels before text appears) and **tokens/sec** decode throughput
+  (what sets $/token). vLLM's continuous batching wins both; the harness measures
+  them over the same OpenAI-compatible streaming API vLLM and TGI expose.

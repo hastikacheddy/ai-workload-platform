@@ -43,6 +43,32 @@ class MockBackend:
             return {"completion": "ok", "tokens": tokens}
 
 
+class MockStreamBackend:
+    """Deterministic streaming stand-in for a token-by-token LLM server.
+
+    `ttft_ms` is the prefill time before the first token; `per_token_ms` the
+    decode interval; `max_concurrency` the batching ceiling. A vanilla server is
+    modelled as high TTFT + low concurrency; a batched (vLLM-like) server as low
+    TTFT + high concurrency — so TTFT and tokens/sec show the real shape without a
+    GPU."""
+
+    def __init__(self, ttft_ms: float = 200.0, per_token_ms: float = 20.0,
+                 tokens: int = 64, max_concurrency: int = 8) -> None:
+        self.ttft_ms = ttft_ms
+        self.per_token_ms = per_token_ms
+        self.tokens = tokens
+        self._sema = threading.Semaphore(max_concurrency)
+
+    def stream(self, request: Dict[str, Any]):
+        n = int(request.get("max_tokens", self.tokens))
+        with self._sema:
+            time.sleep(self.ttft_ms / 1000.0)          # prefill → first token
+            yield "tok"
+            for _ in range(max(0, n - 1)):
+                time.sleep(self.per_token_ms / 1000.0)
+                yield "tok"
+
+
 class OpenAICompatBackend:
     """Real backend: POST /chat/completions to a vLLM or TGI OpenAI-compatible
     server. Set base_url to the vLLM service for the 'after' run and to the
@@ -72,6 +98,36 @@ class OpenAICompatBackend:
         return {"completion": data["choices"][0]["message"]["content"],
                 "usage": data.get("usage", {})}
 
+    def stream(self, request: Dict[str, Any]):
+        """Yield content tokens as they arrive (OpenAI SSE, stream=True) — the
+        real path for measuring TTFT + tokens/sec against vLLM/TGI."""
+        import json as _json
+        import httpx
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        body = {
+            "model": self.model,
+            "messages": request.get("messages")
+            or [{"role": "user", "content": request.get("prompt", "Hello")}],
+            "max_tokens": int(request.get("max_tokens", 64)),
+            "temperature": float(request.get("temperature", 0.0)),
+            "stream": True,
+        }
+        with httpx.stream("POST", f"{self.base_url}/chat/completions", json=body,
+                          headers=headers, timeout=self.timeout) as r:
+            r.raise_for_status()
+            for line in r.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                payload = line[len("data:"):].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    delta = _json.loads(payload)["choices"][0]["delta"].get("content")
+                except (KeyError, ValueError, IndexError):
+                    continue
+                if delta:
+                    yield delta
+
 
 class HFPipelineBackend:
     """In-process HuggingFace text-generation pipeline — the literal 'vanilla
@@ -95,6 +151,9 @@ def build_backend(kind: str, **kwargs):
     if kind == "mock":
         return MockBackend(**{k: v for k, v in kwargs.items()
                               if k in ("base_latency_ms", "max_concurrency")})
+    if kind in ("mock-stream", "mockstream"):
+        return MockStreamBackend(**{k: v for k, v in kwargs.items()
+                                    if k in ("ttft_ms", "per_token_ms", "tokens", "max_concurrency")})
     if kind in ("vllm", "openai", "tgi"):
         return OpenAICompatBackend(kwargs["base_url"], kwargs.get("model", "default"),
                                    timeout=kwargs.get("timeout", 60.0),

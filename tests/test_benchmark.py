@@ -8,8 +8,11 @@ renders.
 """
 import math
 
-from benchmarks.harness import benchmark, compare, _percentile, GpuSampler
-from benchmarks.backends import build_backend, MockBackend
+from benchmarks.harness import (
+    benchmark, compare, _percentile, GpuSampler,
+    benchmark_streaming, compare_streaming,
+)
+from benchmarks.backends import build_backend, MockBackend, MockStreamBackend
 
 
 def test_percentile_nearest_rank():
@@ -62,5 +65,35 @@ def test_compare_table_and_delta():
 
 def test_build_backend_factory():
     assert isinstance(build_backend("mock"), MockBackend)
+    assert isinstance(build_backend("mock-stream"), MockStreamBackend)
     oai = build_backend("vllm", base_url="http://x:8000/v1", model="m")
     assert oai.base_url == "http://x:8000/v1"
+
+
+# ── Streaming (LLM) metrics: TTFT + tokens/sec ─────────────────────
+def test_streaming_reports_ttft_and_throughput():
+    be = MockStreamBackend(ttft_ms=30, per_token_ms=2, tokens=16, max_concurrency=8)
+    res = benchmark_streaming(be.stream, {"max_tokens": 16}, label="s",
+                              n_requests=24, concurrency=8, warmup=2)
+    assert res.ttft_ms["p50"] <= res.ttft_ms["p95"] <= res.ttft_ms["p99"]
+    assert res.ttft_ms["p50"] >= 25          # ~ the configured 30ms prefill
+    assert res.tokens_per_sec > 0
+    assert res.errors == 0
+
+
+def test_streaming_ttft_reflects_prefill():
+    slow = MockStreamBackend(ttft_ms=120, per_token_ms=1, tokens=8, max_concurrency=8)
+    fast = MockStreamBackend(ttft_ms=20, per_token_ms=1, tokens=8, max_concurrency=8)
+    slow_r = benchmark_streaming(slow.stream, {}, label="slow", n_requests=16, concurrency=8, warmup=1)
+    fast_r = benchmark_streaming(fast.stream, {}, label="fast", n_requests=16, concurrency=8, warmup=1)
+    assert fast_r.ttft_ms["p50"] < slow_r.ttft_ms["p50"]   # lower prefill → lower TTFT
+
+
+def test_compare_streaming_table():
+    a = MockStreamBackend(ttft_ms=200, per_token_ms=20, tokens=16, max_concurrency=2)
+    b = MockStreamBackend(ttft_ms=40, per_token_ms=4, tokens=16, max_concurrency=8)
+    ra = benchmark_streaming(a.stream, {}, label="Vanilla", n_requests=16, concurrency=8, warmup=1)
+    rb = benchmark_streaming(b.stream, {}, label="vLLM", n_requests=16, concurrency=8, warmup=1)
+    table = compare_streaming([ra, rb])
+    assert "TTFT p50 (ms)" in table and "Throughput (tok/s)" in table
+    assert "token throughput" in table

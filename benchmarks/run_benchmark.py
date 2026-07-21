@@ -16,7 +16,7 @@ Examples
         --out benchmarks/results/latest.md
 
 The numbers the harness reports (p50/p95/p99, throughput, GPU util) are the exact
-axes an AI-infra interview probes; see docs/platform/COST_MODEL.md for how
+axes that matter for production LLM serving; see docs/platform/COST_MODEL.md for how
 throughput maps to $/request.
 """
 from __future__ import annotations
@@ -27,12 +27,34 @@ import os
 from typing import Optional
 
 from benchmarks.backends import build_backend
-from benchmarks.harness import benchmark, compare
+from benchmarks.harness import benchmark, compare, benchmark_streaming, compare_streaming
 
 
 def _run(args) -> None:
     request = {"prompt": args.prompt, "max_tokens": args.max_tokens}
     results = []
+
+    if args.stream_demo:
+        # LLM streaming metrics: vanilla (high TTFT, low concurrency) vs vLLM
+        # (low TTFT via continuous batching, high concurrency).
+        vanilla = build_backend("mock-stream", ttft_ms=900, per_token_ms=45,
+                                tokens=args.max_tokens, max_concurrency=2)
+        vllm = build_backend("mock-stream", ttft_ms=250, per_token_ms=8,
+                             tokens=args.max_tokens, max_concurrency=16)
+        sr = [
+            benchmark_streaming(vanilla.stream, request, label="Vanilla HF (mock)",
+                                n_requests=args.requests, concurrency=args.concurrency),
+            benchmark_streaming(vllm.stream, request, label="vLLM (mock)",
+                                n_requests=args.requests, concurrency=args.concurrency),
+        ]
+        table = compare_streaming(sr)
+        print("\n" + table + "\n")
+        if args.out:
+            os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+            with open(args.out, "w", encoding="utf-8") as f:
+                f.write("# LLM streaming benchmark (TTFT + tokens/sec)\n\n" + table + "\n")
+            print(f"Wrote {args.out}")
+        return
 
     if args.demo:
         # 'vanilla': serves ~2 concurrent (no batching); 'vLLM': ~16 (batched).
@@ -75,6 +97,8 @@ def _run(args) -> None:
 def main(argv: Optional[list] = None) -> None:
     p = argparse.ArgumentParser(description="Inference optimization benchmark")
     p.add_argument("--demo", action="store_true", help="zero-dependency mock comparison")
+    p.add_argument("--stream-demo", action="store_true",
+                   help="zero-dependency streaming demo (TTFT + tokens/sec)")
     p.add_argument("--before-url")
     p.add_argument("--before-model", default="baseline")
     p.add_argument("--after-url")
