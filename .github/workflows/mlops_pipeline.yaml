@@ -86,8 +86,13 @@ jobs:
 
       - name: Run tests with coverage
         run: |
+          # DagBag tests (tests/test_dags.py, testing/test_dag_validation.py) need a
+          # fully-provisioned Airflow metadata DB + FAB provider (they build the real
+          # DagBag). They run in the docker-compose Airflow env, not this lightweight
+          # unit job — the Airflow-free task logic in src/pipelines/ is tested directly.
           pytest tests/ testing/ \
             --ignore=tests/test_dags.py \
+            --ignore=testing/test_dag_validation.py \
             --cov=src \
             --cov-report=term-missing \
             --cov-fail-under=70 \
