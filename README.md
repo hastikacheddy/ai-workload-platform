@@ -1,307 +1,247 @@
-# AI Platform — Cloud-Native Infrastructure for Production ML & LLM Workloads
+# AI Platform
 
-> A Kubernetes-native platform for running AI workloads end to end: a
-> framework-neutral model registry + self-service deployment API, CPU **and** GPU
-> serving (LightGBM and vLLM), distributed training, inference benchmarking,
-> FinOps, and full observability/security — demonstrated on a real workload (NYC
-> yellow-taxi demand forecasting, leakage-free with calibrated risk bands) plus an
-> LLM operations copilot grounded in that workload's own forecast + monitoring data.
+**Cloud-native infrastructure for running production ML & LLM workloads on Kubernetes.**
 
 <p>
-<a href="https://github.com/hastikacheddy/nyc-taxi-demand-forecasting/actions/workflows/mlops_pipeline.yaml"><img alt="CI" src="https://github.com/hastikacheddy/nyc-taxi-demand-forecasting/actions/workflows/mlops_pipeline.yaml/badge.svg"></a>
+<a href="https://github.com/hastikacheddy/ai-workload-platform/actions/workflows/mlops_pipeline.yaml"><img alt="CI" src="https://github.com/hastikacheddy/ai-workload-platform/actions/workflows/mlops_pipeline.yaml/badge.svg"></a>
 <img alt="Python" src="https://img.shields.io/badge/python-3.11-blue">
-<img alt="Tests" src="https://img.shields.io/badge/tests-149%20passing-brightgreen">
-<img alt="Coverage gate" src="https://img.shields.io/badge/coverage%20gate-%E2%89%A570%25-green">
-<img alt="Security" src="https://img.shields.io/badge/security-Bandit%20%7C%20Semgrep%20%7C%20Trivy-orange">
+<img alt="Tests" src="https://img.shields.io/badge/tests-161%20passing-brightgreen">
+<img alt="Kubernetes" src="https://img.shields.io/badge/Kubernetes-native-blue">
+<img alt="Serving" src="https://img.shields.io/badge/serving-KServe%20%7C%20vLLM-orange">
 <img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey">
 </p>
 
-This is not a notebook with a `model.pkl`. It is the surrounding **operational
-system** — the 90% of ML work that happens after the model trains — built on real
-data and graded against an MLOps maturity framework.
+A framework-neutral platform that lets any team **register, deploy, and serve any AI
+workload** — a CPU-bound gradient-boosted model or a GPU-served LLM — through one API,
+one scheduler, and one observability stack. It is the internal equivalent of Vertex AI,
+SageMaker, or Databricks Model Serving, built as a **working, tested system** rather than
+a set of diagrams.
+
+> **Status, stated up front.** The control plane, serving backends, canary routing,
+> inference benchmarks, distributed trainer, FinOps, and LLMOps **run and are covered by
+> 161 automated tests**. GPU node pools and A100s are **specified as infrastructure-as-code
+> and Kubernetes manifests**, not provisioned. Nothing here pretends to own hardware it
+> does not — see [What is real vs. designed](#what-is-real-vs-designed).
 
 ---
 
 ## Contents
-- [AI Platform layer](#ai-platform-layer) · [Results](#results) · [What makes it production-grade](#what-makes-this-production-grade-not-a-notebook) · [Architecture](#architecture)
-- [Capabilities](#capabilities) · [Engineering decisions](#engineering-decisions-worth-calling-out) · [Quickstart](#quickstart) · [Repo layout](#repository-layout)
+
+- [What it is](#what-it-is) · [Architecture](#architecture) · [Capabilities](#capabilities)
+- [The declarative workload interface](#the-declarative-workload-interface) · [Quickstart](#quickstart)
+- [Reference workload](#reference-workload-nyc-taxi-demand-forecasting) · [Design & decision records](#design--decision-records)
+- [What is real vs. designed](#what-is-real-vs-designed) · [Repository layout](#repository-layout) · [Tech stack](#tech-stack)
 
 ---
 
-## AI Platform layer
+## What it is
 
-Beyond serving one model well, the repo now includes an **internal AI platform
-abstraction** — one framework-neutral control plane that registers, deploys, and
-serves *any* model (a CPU LightGBM forecaster **and** a GPU-served LLM) through the
-same API, scheduler, and observability. This is the layer a platform team runs
-internally on top of Vertex AI / SageMaker / Databricks Model Serving.
+MLOps ships *one* model well. A platform lets *many* teams ship *many* models without a
+platform engineer in the loop. This repository is that platform layer:
 
-```
- Developers → Internal AI Platform API  (src/platform/gateway.py)
-                    │  /v1/models  /v1/deployments  /v1/inference  /v1/costs
-        ┌───────────┴───────────┐
-   Model Registry         Deployment Manager  ── canary · fallback · pool placement
-  (framework-neutral)            │ build_backend()
-                         ┌───────┴────────┐
-                   LightGBM (CPU)     vLLM / LLM (GPU)
-                         └──── KServe · GPU pools · autoscale ────┘
-              Observability · FinOps · Reliability · Multi-tenancy
-```
+| Concern | What the platform provides |
+|---|---|
+| **Self-service** | Register a model and deploy it via a REST API **or** a declarative `workload.yaml` |
+| **Framework-neutral** | One control plane serves LightGBM, scikit-learn/ONNX, and vLLM/Transformers LLMs |
+| **Compute-aware** | Placement onto **CPU vs GPU pools is derived from the workload**, not requested by the caller |
+| **Safe rollout** | Canary traffic splitting with **automatic fallback** to the stable version |
+| **Observable & costed** | Prometheus metrics plus per-model / per-request **cost attribution** (FinOps) |
+| **GenAI-ready** | Prompt registry, guardrails, RAG, evaluation, and vLLM serving |
 
-**Eight infrastructure capabilities, each runnable and tested:**
-
-| Gap | What was built | Where |
-|---|---|---|
-| **Platform APIs** | Register / deploy / infer / cost control plane + **declarative `workload.yaml`** (any workload → CPU/GPU pool) | [`src/platform/`](src/platform/) · [ARCHITECTURE](docs/platform/ARCHITECTURE.md) |
-| **K8s-native serving** | KServe `InferenceService` (CPU + vLLM GPU), canary, autoscale | [`kubernetes/serving/`](kubernetes/serving/) |
-| **LLM serving** | vLLM backend (OpenAI-compatible), GPU pool | [`backends.py`](src/platform/backends.py) · [ADR-002](docs/adr/002-why-vllm.md) |
-| **GPU infrastructure** | Taints/tolerations, node affinity, quotas, priority classes | [`gpu-*.yaml`](kubernetes/serving/) · [GPU_DESIGN](docs/platform/GPU_DESIGN.md) |
-| **Inference optimization** | p50/p95/p99 + throughput + GPU-util, **and TTFT + tokens/sec** for streaming LLMs | [`benchmarks/`](benchmarks/) |
-| **Distributed compute** | Data-parallel trainer + PyTorch DDP + Ray Train (checkpoint/recovery, 5 tests) | [`src/training/distributed/`](src/training/distributed/) |
-| **Reliability + multi-tenancy** | Failure catalogue, degradation ladders, canary fallback, GPU quotas | [RELIABILITY](docs/platform/RELIABILITY.md) |
-| **Cloud architecture** | Azure AKS + GPU pool + ACR + Blob + Key Vault + Monitor (Terraform, `validate` passes) | [`infra/azure/`](infra/azure/) · [ADR-001](docs/adr/001-why-kubernetes.md) |
-
-Plus **FinOps** (cost/request, cost/model, idle-GPU detection — [`finops.py`](src/platform/finops.py), [COST_MODEL](docs/platform/COST_MODEL.md)) and a
-full **LLMOps** layer (prompt registry, guardrails, embeddings, vector store, RAG,
-eval — [`src/llmops/`](src/llmops/)) including a **Taxi Ops Copilot** that answers
-operator questions grounded in the forecasting workload's own demand data
-([`ops_copilot.py`](src/llmops/ops_copilot.py)). Design decisions are recorded as
-[Architecture Decision Records](docs/adr/) and a full [reliability](docs/platform/RELIABILITY.md) /
-[scaling](docs/platform/SCALING.md) / [DR](docs/platform/DISASTER_RECOVERY.md) design-doc set.
-
-> **Honesty ledger:** the platform control plane, backends, canary/fallback,
-> benchmark, FinOps, distributed trainer, and LLMOps all **run and are tested**
-> here; the GPU node pools and A100s are **designed as IaC + manifests**, not
-> provisioned. Nothing pretends to own hardware it doesn't. See
-> [ARCHITECTURE §5](docs/platform/ARCHITECTURE.md).
-
----
-
-## Results
-
-Out-of-sample evaluation on **~13M real trips** across 4 months of 2024 TLC
-yellow-taxi data, aggregated to per-period demand. Scoring uses a strict
-chronological **80/20 split** — the model never sees the held-out tail it is
-graded on. Reproduce end to end with `python scripts/evaluate.py`.
-
-| Model  | Test window | MAE | MAPE | 99% interval coverage |
-|--------|-------------|----:|-----:|----------------------:|
-| **Daily**  | 23 days        | ~6,200 trips | **5.4 %** | 95.7 % |
-| **Hourly** | 24 days (576 h) | ~260 trips   | **8.1 %** | 100 % |
-
-The 99% Value-at-Risk band is **calibrated** — empirical coverage lands at/above
-the 99% target without being absurdly wide (the daily band sits ~12–15% above the
-point forecast). Next-step production forecast for `2024-05-01`: **117,078
-trips/day** (99% capacity target 134,564); peak-hour target **2,592 trips/h**.
-
-![Forecast vs actual](docs/forecast_vs_actual.png)
-
-*Top — daily demand: the point forecast (dashed) tracks actuals inside the 99% VaR
-band. Bottom — hourly demand over the last 7 test days: the model captures the full
-commuter rhythm (overnight trough, AM/PM peaks) with ~8% error.*
-
----
-
-## What makes this *production-grade*, not a notebook
-
-The single most important engineering decision in the repo, and the one I'd lead
-with:
-
-> **The original notebook model was a *nowcast*, not a forecast — and I caught it.**
-
-The notebook's features include `LagDelta = Volume − Lag_n`, which contains the
-*current* period's value. That produces a beautiful in-sample MAE (~13) but is
-**data leakage**: the model can only "predict" a period whose actual is already
-known. A naïve port would have shipped a model that looks excellent in a demo and
-is useless in production.
-
-Instead I built a separate, **leakage-free forecaster**
-([`src/forecasting/forecaster.py`](src/forecasting/forecaster.py)) whose every
-feature for target period *t* is computed strictly from data **before** *t*
-(`Lag1`, seasonal lag, *past-only* momentum and rolling stats, plus calendar
-features known in advance). Re-scored honestly out-of-sample, that's the **5.4%
-daily MAPE** above — a number you can actually trust in production. The original
-notebook logic is preserved untouched; the forecaster is additive.
-
-This is the difference between *"I trained a model"* and *"I understand why a
-model fails in production."*
+The design principle throughout: **the caller never branches on model type.** A team asks
+for `{"model": "risk-copilot"}`; the platform resolves the version, selects the pool,
+routes traffic, executes the correct backend, records metrics, and falls back on failure.
+Adding a new serving engine (Triton, TGI) is a ~40-line backend, not an API change.
 
 ---
 
 ## Architecture
 
 ```
- TLC trip records (public Parquet, ~13M rows)
-      │  data_cleaning_dag  (@daily)
-      ▼  sensor → ingest+clean (UTC, drop invalid/out-of-range) → pandera gate
- data/{daily,hourly}_demand.csv   (per-period trip counts, DVC-tracked)
-      │
-      ├─►  weekly_training_dag  (@weekly)
-      │      validate → train LightGBM → GARCH σ → CHAMPION-CHALLENGER gate
-      │      → MLflow registry @champion   (+ model card, SHA-256 integrity tag)
-      │
-      ├─►  daily / hourly_inference_dag
-      │      sensor → forecast_next → 99% VaR band → shadow_log (idempotent upsert)
-      │
-      └─►  monitoring_dag  (@daily)
-             join matured forecasts to actuals → realised MAE & coverage
-             → on concept drift, TRIGGER retraining          ← closed loop
-                                   │
- Serving API (FastAPI) ───────────┘  loads @champion, /predict + /metrics
-      │   API-key auth · rate-limited · Prometheus telemetry · anomaly guard
-      ▼
- Kubernetes (non-root, read-only FS, HPA 2→6) · MinIO/S3 artifacts · Prometheus+Grafana
+                    Developers / internal services
+                                │
+                                ▼
+              ┌───────────────────────────────────┐
+              │        AI Platform API (gateway)   │   src/platform/gateway.py
+              │  /v1/models   /v1/workloads        │
+              │  /v1/deployments   /v1/inference   │
+              │  /v1/costs   /v1/metrics           │
+              └───────┬───────────────────┬────────┘
+             control  │                   │  data plane
+             plane    ▼                   ▼
+        ┌────────────────────┐   ┌────────────────────────┐
+        │  Model Registry    │   │  Deployment Manager     │   src/platform/
+        │  framework-neutral │   │  pool placement · canary│
+        │  index + aliases   │   │  · fallback · scaling   │
+        └─────────┬──────────┘   └───────────┬────────────┘
+                  │                           │ build_backend()
+                  │              ┌────────────┴───────────┐
+                  │              ▼                        ▼
+                  │      LightGBM (CPU pool)        vLLM / LLM (GPU pool)
+                  │              └──── KServe · autoscale · canary ────┘
+                  ▼
+        MLflow registry              Kubernetes + Terraform (AKS)
+        (source of truth)     ───────────────────────────────────────
+                                  Observability · Security · FinOps
+                               Prometheus · Grafana · OPA · Trivy · cosign
 ```
 
-> **One mental model carries the whole repo: _Airflow conducts; `src/` plays._**
-> The DAGs only decide *when* and *in what order*. The real logic lives in `src/`
-> and runs identically with or without Airflow — which is exactly why **109 tests**
-> can exercise it directly.
-
-See **[ARCHITECTURE_AND_HANDOVER.md](ARCHITECTURE_AND_HANDOVER.md)** for the full
-design, every safety guardrail (and *why* it exists), and the ops runbook.
+Three planes, cleanly separated: a **control plane** (what should run), a **data plane**
+(serving the request), and a **management plane** (health and cost). The full narrative is
+in [`docs/platform/ARCHITECTURE.md`](docs/platform/ARCHITECTURE.md).
 
 ---
 
 ## Capabilities
 
-### 🧠 Modelling & uncertainty
-| What | Where |
-|---|---|
-| Leakage-free 1-step LightGBM forecaster (daily + hourly) | [`forecasting/forecaster.py`](src/forecasting/forecaster.py) |
-| **GARCH(1,1) + 10k-sim Monte-Carlo Value-at-Risk** for calibrated 99% buffers | [`inference/risk.py`](src/inference/risk.py) |
-| **Hour-of-day conditional σ** — wide at rush hour, floored overnight (heteroscedasticity the single GARCH σ misses) | [`inference/risk.py`](src/inference/risk.py) |
-| Reproducible out-of-sample evaluation harness + chart | [`scripts/evaluate.py`](scripts/evaluate.py) |
-
-### 🔁 MLOps lifecycle
-| What | Where |
-|---|---|
-| MLflow registry with **champion-challenger promotion gate** — a retrain only goes live if its holdout MAE *beats* the incumbent; otherwise it's parked as `@challenger` | [`common/promotion.py`](src/common/promotion.py) |
-| **Closed drift loop** — joins matured forecasts to actuals, flags concept drift at +15% realised MAE, auto-triggers retraining | [`monitoring/scoring.py`](src/monitoring/scoring.py) |
-| Evidently drift detection on feature distributions | [`monitoring/drift_detector.py`](src/monitoring/drift_detector.py) |
-| Feast feature store (offline → online materialization) | [`feature_repo/`](feature_repo/) |
-| Model cards / governance metadata logged per version | [`governance/cards.py`](src/governance/cards.py) |
-| DVC data versioning | [`.dvc/`](.dvc/) |
-
-### 🛰️ Orchestration (Airflow)
-Five DAGs with **enterprise guardrails**: idempotent tasks bounded by the
-execution date (safe backfills/retries), `KubernetesPodOperator` compute
-isolation, **reschedule-mode sensors** (no held worker slots), concurrency pools +
-`max_active_runs=1`, and exponential-backoff retries. The orchestration-free task
-logic lives in [`src/pipelines/`](src/pipelines/) and is validated by a DagBag
-suite in [`testing/`](testing/).
-
-### 🚀 Serving & deployment
-| What | Where |
-|---|---|
-| FastAPI service sharing the **exact** batch forecast code path (API & DAGs give identical forecasts) | [`serving/api.py`](src/serving/api.py) |
-| API-key auth (constant-time compare), **60 req/min rate limit** (model-extraction defence), audit log with hashed request IDs, OpenAPI disabled in prod, anomaly guard on outputs | [`serving/api.py`](src/serving/api.py) |
-| Hardened Kubernetes: non-root, `readOnlyRootFilesystem`, drop **ALL** caps, seccomp `RuntimeDefault`, no SA token, **HPA 2→6 @70% CPU** | [`kubernetes/`](kubernetes/) |
-| OPA/Rego admission policy enforcing the pod least-privilege baseline | [`kubernetes/opa-policy.rego`](kubernetes/opa-policy.rego) |
-| Locust load-test profile | [`loadtest/`](loadtest/) |
-
-### 🔐 Security & supply chain
-| What | Where |
-|---|---|
-| **6-stage CI/CD**: lint → code-review → tests(+cov gate) → data-quality → smoke-train → supply-chain → image build | [`.github/workflows/`](.github/workflows/mlops_pipeline.yaml) |
-| Static analysis: **Bandit + Semgrep** (custom architecture rules) gate the build | [`.semgrep/rules.yml`](.semgrep/rules.yml) |
-| **SBOM/AI-BOM** (CycloneDX), dependency CVE scan (pip-audit), **Trivy** image scan (fails on CRITICAL), **cosign** image signing | CI workflow |
-| **Model-artifact integrity** — SHA-256 verified before load (defends against tampered pickles executing on deserialization) | [`inference/model_integrity.py`](src/inference/model_integrity.py) |
-| PII scanner + pandera data-quality gates on every batch | [`data/pii.py`](src/data/pii.py), [`data/quality_gate.py`](src/data/quality_gate.py) |
-
-### 📈 Observability & ops
-Prometheus + Grafana dashboards (request rate, latency histograms, drift metrics
-via statsd-exporter), automated infra-state **backup/restore** scripts, and a full
-handover runbook. See [`observability/`](observability/).
+| Area | What is built | Where |
+|---|---|---|
+| **Platform API** | Framework-neutral control plane: register / deploy / infer / cost, plus a declarative `workload.yaml` | [`src/platform/`](src/platform/) |
+| **Kubernetes-native serving** | KServe `InferenceService` for CPU (LightGBM) and GPU (vLLM), with canary and concurrency autoscaling | [`kubernetes/serving/`](kubernetes/serving/) |
+| **LLM serving** | vLLM backend over the OpenAI-compatible API, scheduled on the GPU pool | [`backends.py`](src/platform/backends.py) · [ADR-002](docs/adr/002-why-vllm.md) |
+| **GPU infrastructure** | Taints/tolerations, node affinity, GPU `ResourceQuota`, and priority classes (serving preempts training) | [`gpu-*.yaml`](kubernetes/serving/) · [GPU_DESIGN](docs/platform/GPU_DESIGN.md) |
+| **Inference optimization** | Benchmark harness: p50/p95/p99, throughput, GPU utilization, **and TTFT + tokens/sec** for streaming LLMs | [`benchmarks/`](benchmarks/) |
+| **Distributed training** | Data-parallel trainer with checkpoint/recovery, plus PyTorch DDP and Ray Train equivalents | [`src/training/distributed/`](src/training/distributed/) |
+| **Reliability & multi-tenancy** | Failure catalogue, degradation ladders, canary→stable fallback, per-tenant GPU quotas | [RELIABILITY](docs/platform/RELIABILITY.md) |
+| **FinOps** | Cost per request, cost per model, idle-GPU detection, monthly burn | [`finops.py`](src/platform/finops.py) · [COST_MODEL](docs/platform/COST_MODEL.md) |
+| **LLMOps** | Prompt registry, guardrails (PII + injection), embeddings, vector store, RAG, evaluation gate | [`src/llmops/`](src/llmops/) |
+| **Cloud architecture** | Azure AKS + GPU node pool + ACR + Blob + Key Vault + Monitor, as Terraform (`terraform validate` passes) | [`infra/azure/`](infra/azure/) · [ADR-001](docs/adr/001-why-kubernetes.md) |
 
 ---
 
-## Engineering decisions worth calling out
+## The declarative workload interface
 
-- **Caught data leakage** that would have shipped a fake-good model, and fixed it
-  without discarding the original analysis ([story above](#what-makes-this-production-grade-not-a-notebook)).
-- **Risk as a first-class output, not an afterthought.** Capacity planning needs a
-  *bound*, not a point estimate — so the system serves a calibrated 99% VaR buffer,
-  validated by empirical coverage, with per-hour volatility.
-- **A promotion gate that can say no.** Continuous training is dangerous without
-  one: a bad retrain silently degrades prod. Here a new model must *earn* `@champion`.
-- **The serving API and the batch DAGs run the same forecasting code** — no
-  train/serve skew by construction.
-- **Security treated as part of "done"**: least-privilege pods, signed & scanned
-  images, artifact-integrity checks, rate limiting, secrets via env/secret-refs only.
+The gateway's REST API is imperative; the platform also accepts a **declarative workload
+spec** — the same shape describes a CPU model and a GPU LLM, and the platform reconciles
+each onto the right pool. This is the "deploy any AI workload" contract.
+
+```yaml
+# A CPU ML-model workload                     # A GPU LLM workload — identical shape
+name: taxi-forecast                           name: ops-copilot-llm
+type: ml-model                                type: llm
+runtime: lightgbm                             runtime: vllm
+artifact_uri: "models:/TaxiDemand@champion"   artifact_uri: "http://vllm.mlops.svc:8000/v1"
+resources: { cpu: "4", memory: 8Gi }          resources: { gpu: 1, gpu_type: nvidia-a100 }
+scaling:   { min: 2, max: 10 }                scaling:   { min: 1, max: 4 }
+```
+
+```bash
+curl -X POST localhost:8090/v1/workloads --data-binary @src/platform/schemas/taxi-forecast.yaml
+```
+
+One interface, opposite compute profiles — which is what makes this a *platform* rather
+than a *service*.
 
 ---
 
 ## Quickstart
 
 ```bash
-pip install -r requirements.txt
-pip install -e .
+pip install -r requirements.txt && pip install -e .
 
-# Fetch public TLC data and build the raw events file (~200 MB download)
-python scripts/download_data.py --start 2024-01 --end 2024-04
+# 1. Run the platform API (control plane + inference data plane)
+uvicorn src.platform.gateway:app --port 8090
+#    then POST to /v1/models · /v1/workloads · /v1/deployments · /v1/inference · /v1/costs
 
-# Run the whole pipeline end-to-end (ingest → train → forecast), no Airflow needed
-python run_pipeline.py
+# 2. Inference-optimization benchmark (zero-dependency mock: vLLM vs vanilla HF)
+python -m benchmarks.run_benchmark --demo           # latency + throughput
+python -m benchmarks.run_benchmark --stream-demo     # TTFT + tokens/sec
 
-# Reproduce the out-of-sample evaluation + chart
-python scripts/evaluate.py
-
-# Tests (149 unit + integration)
-pytest tests/ testing/
-
-# ── AI Platform layer ──────────────────────────────────────────────
-# Run the internal platform API (register → deploy → infer → costs)
-uvicorn src.platform.gateway:app --port 8090      # then POST /v1/models, /v1/deployments, /v1/inference
-
-# Inference-optimization benchmark (zero-dep self-demo: vLLM vs vanilla HF)
-python -m benchmarks.run_benchmark --demo
-
-# Distributed training (dep-free data-parallel: shard → all-reduce → checkpoint → recover)
+# 3. Distributed training (dependency-free: shard -> all-reduce -> checkpoint -> recover)
 python -m src.training.distributed.data_parallel_demo
 
-# Validate the Azure infra
+# 4. LLM ops copilot, grounded in the reference workload's own data
+python -m src.llmops.ops_copilot
+
+# 5. Validate the Azure infrastructure
 cd infra/azure && terraform init -backend=false && terraform validate
 
-# Inspect the DAGs in a real Airflow UI (Docker)
-docker compose -f docker-compose.airflow.yml up -d --build   # http://localhost:8088
+# 6. Tests (161; dependency-free where a backend or GPU would otherwise be required)
+pytest tests/
 ```
-> The small aggregated `data/*_demand.csv` are committed so the repo runs out of
-> the box; the large raw Parquet is fetched by the download script (git-ignored).
+
+---
+
+## Reference workload: NYC taxi demand forecasting
+
+The platform is demonstrated on a **real, production-grade forecasting model**, not a toy —
+this is what keeps it honest. The workload forecasts NYC yellow-taxi demand (daily and
+hourly) with a **leakage-free** LightGBM forecaster and calibrated 99% Value-at-Risk bands:
+
+| Model | Test window | MAPE | 99% interval coverage |
+|---|---|---:|---:|
+| Daily | 23 days | **5.4%** | 95.7% |
+| Hourly | 24 days (576 h) | **8.1%** | 100% |
+
+It ships with a champion–challenger promotion gate, a closed drift-retraining loop, a
+hardened FastAPI serving path, and an Airflow orchestration layer. The platform's **Ops
+Copilot** answers operator questions ("why did demand spike yesterday?") grounded in this
+workload's own demand data. Modelling detail lives in the
+[`src/forecasting/`](src/forecasting/), [`src/monitoring/`](src/monitoring/), and
+[`src/serving/`](src/serving/) packages.
+
+---
+
+## Design & decision records
+
+The design documents match the code, decision for decision:
+
+| Document | Subject |
+|---|---|
+| [ARCHITECTURE](docs/platform/ARCHITECTURE.md) | The three planes, request lifecycle, compute placement |
+| [GPU_DESIGN](docs/platform/GPU_DESIGN.md) | Pools, taints, priority/preemption, fractional GPU, autoscaling |
+| [RELIABILITY](docs/platform/RELIABILITY.md) | Failure catalogue, degradation ladders, blast-radius isolation |
+| [SCALING](docs/platform/SCALING.md) | CPU vs GPU scaling signals, bottleneck order, capacity planning |
+| [COST_MODEL](docs/platform/COST_MODEL.md) | cost/request, cost/model, idle-GPU detection, auto scale-down |
+| [DISASTER_RECOVERY](docs/platform/DISASTER_RECOVERY.md) | RPO/RTO targets, backup/restore, scenario runbooks |
+| [SECURITY](docs/platform/SECURITY.md) | Multi-tenancy isolation, OWASP-LLM threats, secrets |
+| [ADRs 001–004](docs/adr/) | Why Kubernetes · why vLLM · model-serving choice · platform API abstraction |
+
+---
+
+## What is real vs. designed
+
+| Component | Status |
+|---|---|
+| Platform API (models / workloads / deployments / inference / costs / metrics) | **Runs, 161 tests** |
+| LightGBM backend (wraps the real forecasting model) | **Real** |
+| Canary split, fallback, auto-degrade | **Real, tested** |
+| vLLM backend | **Real when pointed at a served model** (`VLLM_BASE_URL`); honest `unavailable` otherwise |
+| Inference benchmark (latency / throughput / TTFT / tokens-sec) | **Runs** (mock + real OpenAI-compatible path) |
+| Distributed data-parallel trainer | **Runs, tested** (all-reduce ≡ single-worker to 1e-10) |
+| FinOps cost attribution | **Runs, tested** |
+| LLMOps (prompt registry, guardrails, RAG, eval, copilot) | **Runs, tested** |
+| Deployment Manager control loop | **In-process simulation**; production actuation is the KServe manifests |
+| GPU node pools / A100s | **Designed as IaC + manifests**, not provisioned |
+
+The engineering that *is* here — the abstraction boundary, routing/fallback, the pool
+model, the benchmark methodology, the all-reduce correctness — is exactly what transfers to
+a cluster that owns the accelerators.
 
 ---
 
 ## Repository layout
+
 | Path | What |
 |---|---|
-| [`src/platform/`](src/platform/) | **AI platform control plane** — registry, deployments, backends, gateway, FinOps |
-| [`src/llmops/`](src/llmops/) | **LLMOps** — prompt registry, guardrails, embeddings, vector store, RAG, eval |
-| [`src/training/distributed/`](src/training/distributed/) | data-parallel trainer + PyTorch DDP + Ray Train (checkpoint/recovery) |
-| [`benchmarks/`](benchmarks/) | inference-optimization harness (p50/p95/p99, throughput, GPU util) |
+| [`src/platform/`](src/platform/) | Control plane — registry, deployments, backends, gateway, workloads, FinOps |
+| [`src/llmops/`](src/llmops/) | Prompt registry, guardrails, embeddings, vector store, RAG, evaluation, ops copilot |
+| [`src/training/distributed/`](src/training/distributed/) | Data-parallel trainer + PyTorch DDP + Ray Train |
+| [`benchmarks/`](benchmarks/) | Inference-optimization harness (latency, throughput, TTFT, tokens/sec) |
 | [`kubernetes/serving/`](kubernetes/serving/) | KServe (CPU + vLLM GPU) + GPU scheduling (taints, quotas, priorities) |
 | [`infra/azure/`](infra/azure/) | Azure AKS + GPU pool + ACR + Blob + Key Vault Terraform |
-| [`docs/platform/`](docs/platform/), [`docs/adr/`](docs/adr/) | Platform design docs (GPU/reliability/scaling/cost/DR/security) + ADRs |
-| [`src/forecasting/`](src/forecasting/) | leakage-free forecaster, training, serving engine, VaR |
-| [`src/inference/`](src/inference/) | risk/VaR, input validation, model-integrity guard |
-| [`src/pipelines/`](src/pipelines/) | idempotent DAG task logic (Airflow-free, fully testable) |
-| [`src/orchestration/`](src/orchestration/) | Airflow operator factory (compute isolation, retries) |
-| [`src/monitoring/`](src/monitoring/) | drift loop + scoring against actuals |
-| [`src/serving/`](src/serving/) | FastAPI app (auth, rate limit, metrics) |
-| [`src/data/`](src/data/), [`src/features/`](src/features/), [`src/governance/`](src/governance/) | ingestion, Feast features, model cards |
-| [`dags/`](dags/), [`testing/`](testing/) | thin Airflow DAGs + DagBag validation suite |
-| [`kubernetes/`](kubernetes/), [`docker/`](docker/) | hardened deploy manifests + images |
-| [`observability/`](observability/) | Prometheus + Grafana stack |
-| [`tests/`](tests/) | 109 unit/integration tests incl. adversarial cases |
+| [`docs/platform/`](docs/platform/), [`docs/adr/`](docs/adr/) | Design documents and architecture decision records |
+| [`src/forecasting/`](src/forecasting/), [`src/serving/`](src/serving/), [`src/monitoring/`](src/monitoring/) | The reference forecasting workload (model, serving, drift loop) |
+| [`dags/`](dags/), [`src/pipelines/`](src/pipelines/) | Airflow orchestration for the reference workload |
 
 ---
 
 ## Tech stack
-`Python 3.11 · LightGBM · GARCH/arch · Apache Airflow · MLflow · Feast · Evidently ·
-FastAPI · Docker · Kubernetes · KServe · vLLM · Ray Train · PyTorch DDP · Terraform
-(Azure AKS) · MinIO/S3 · Prometheus · Grafana · pandera · DVC · GitHub Actions ·
-Bandit · Semgrep · Trivy · cosign · CycloneDX`
 
-## Data & license
-Trip data: **NYC TLC open data** (public). Image paths (`ghcr.io/your-username/…`)
-and infra endpoints are placeholders — set them for your own environment. Code
-licensed under **MIT** — see [LICENSE](LICENSE).
+`Python 3.11 · FastAPI · Kubernetes · KServe · vLLM · Ray Train · PyTorch DDP · Terraform
+(Azure AKS) · MLflow · Prometheus · Grafana · OPA · Trivy · cosign · LightGBM · Feast ·
+Airflow · DVC · Bandit · Semgrep`
+
+## License
+
+MIT — see [LICENSE](LICENSE).
