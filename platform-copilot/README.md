@@ -1,115 +1,185 @@
 # Platform Copilot
 
-An **agentic RAG service** that answers operational questions about an AI/ML platform —
-grounded in its ADRs, runbooks, model cards, and incident postmortems, with citations.
+**An agentic RAG service that answers operational questions about an AI/ML platform —
+grounded in its own runbooks, ADRs and incident postmortems, and citing every claim.**
 
-Ask it:
+<p>
+<img alt="Tests" src="https://img.shields.io/badge/tests-40%20passing-brightgreen">
+<img alt="Python" src="https://img.shields.io/badge/python-3.12-blue">
+<img alt="API" src="https://img.shields.io/badge/API-FastAPI-009688">
+<img alt="Agent" src="https://img.shields.io/badge/agent-LangGraph-1c3c3c">
+<img alt="Retrieval" src="https://img.shields.io/badge/retrieval-OpenSearch%20BM25%20%2B%20kNN-005EB8">
+<img alt="LLM" src="https://img.shields.io/badge/LLM-Ollama%20(local)-black">
+<img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey">
+</p>
 
-> - *"Why did we choose OpenSearch over pgvector for retrieval?"*
-> - *"What's the promotion-gate policy for the demand forecaster?"*
-> - *"Which runbook covers a drift alert on the hourly model, and what are the first three steps?"*
+![Platform Copilot answering a drift-alert question with citations](docs/images/gradio-ui.png)
 
-…and get a grounded answer that cites the exact document and section, in a few hundred
-milliseconds, with the whole call traced and costed.
+Ask *"What are the first steps for a demand-forecaster drift alert?"* and you get the actual
+steps from the actual runbook, each line citing the section it came from — not a
+plausible-sounding guess. When the corpus doesn't cover the question, it says so.
 
-Companion to [`ai-workload-platform`](../ai-workload-platform) — this is the copilot for
-that platform's operational knowledge.
+A service inside [`ai-workload-platform`](../README.md); it answers questions about the
+platform it runs alongside.
+
+---
+
+## Contents
+
+- [Why this exists](#why-this-exists) · [Architecture](#architecture) · [The agent loop](#the-agent-loop)
+- [Interfaces](#interfaces) · [Quickstart](#quickstart) · [Verified end to end](#verified-end-to-end)
+- [Design decisions](#design-decisions) · [Repository layout](#repository-layout) · [Status](#status--what-runs-and-what-does-not)
+
+---
 
 ## Why this exists
 
-Operational knowledge on a platform is scattered across ADRs, runbooks, model cards, dashboards,
-and postmortems. On-call engineers and new joiners burn hours hunting for it. This service turns
-that corpus into a **queryable, cited, low-latency assistant** — and treats the production
-concerns (retrieval quality, observability, cost, caching, guardrails, and evaluation) as
-first-class, not afterthoughts.
+Operational knowledge lives scattered across ADRs, runbooks, model cards and postmortems.
+On-call engineers and new joiners burn hours hunting through it. This service turns that
+corpus into a **queryable, cited, low-latency assistant** — and treats the production
+concerns (retrieval quality, observability, cost, caching, guardrails, evaluation) as
+first-class rather than as afterthoughts.
 
-The design deliberately builds a **strong keyword-search baseline first**, then layers semantic
-and agentic capabilities on top only where they measurably help. See
-[`docs/adr/0001-agentic-rag-architecture.md`](docs/adr/0001-agentic-rag-architecture.md).
+The design deliberately builds a **strong keyword baseline first**, then layers semantic and
+agentic capability on top only where it measurably helps.
+
+---
 
 ## Architecture
 
 ```mermaid
 flowchart LR
   subgraph Ingestion
-    A[ADRs / runbooks / model cards / postmortems] --> B[Airflow DAGs]
-    B --> C[Docling parse + metadata]
+    A[ADRs / runbooks / model cards / postmortems] --> B[Airflow DAG]
+    B --> C[parse + section split]
     C --> D[(PostgreSQL<br/>source of truth)]
-    C --> E[Section-aware chunk + embed]
+    C --> E[chunk + embed]
   end
   D --> F[(OpenSearch<br/>BM25 + kNN)]
   E --> F
   subgraph Query
-    G[User / Telegram / Gradio] --> H[FastAPI]
+    G[Gradio / Telegram / HTTP] --> H[FastAPI]
     H --> I[LangGraph agent]
-    I --> J[Hybrid retrieval - RRF]
+    I --> J[hybrid retrieval - RRF]
     J --> F
     I --> K[Ollama LLM]
-    K --> L[Grounded answer + citations]
+    K --> L[grounded answer + citations]
   end
   H -. trace + cost .-> M[Langfuse]
   H -. cache .-> N[(Redis)]
 ```
 
-The agent (LangGraph) wraps retrieval in a state machine: **guardrail** (is this an ops
-question?) → **retrieve** → **grade** documents for relevance → **rewrite** the query
-(symptom → component) → **retry** up to N times → **answer or escalate**.
+Requests are layered **`Observed → Cached → Agent/RAG`**: every call is timed and traced, an
+identical question skips retrieval *and* the LLM entirely, and only a cache miss reaches the
+model. Postgres owns truth; OpenSearch is a derived index that can be rebuilt from it.
 
-## Tech stack
+---
 
-| Layer | Choice |
+## The agent loop
+
+```mermaid
+flowchart LR
+  Q([question]) --> G[guardrail<br/>in scope?]
+  G --> R[retrieve<br/>BM25 + kNN → RRF]
+  R --> D{grade<br/>relevant?}
+  D -- yes --> A[generate<br/>grounded + cited]
+  D -- "no · in scope<br/>retries left" --> W[rewrite query]
+  W --> R
+  D -- "no · and classifier<br/>said out of scope" --> X[refuse]
+  A --> Z([answer + citations])
+  X --> Z
+```
+
+**Scope is corroborated, not trusted.** Running this against a real model exposed the flaw in
+the obvious design: a small classifier doesn't know that "promotion gate" is platform jargon,
+so it refused perfectly valid questions. The agent now refuses **only when the classifier says
+no *and* retrieval found nothing relevant** — the corpus defines the scope, not the model's
+world knowledge. An unparseable verdict fails *open*, because a wrongly-refused operational
+question is far worse than an off-topic one slipping through.
+
+The agent costs ~3 LLM round-trips (~38s vs ~10s single-shot on a CPU-only 1B model).
+Set `USE_AGENT=false` for the single-shot RAG path.
+
+---
+
+## Interfaces
+
+| Surface | Entry point |
 |---|---|
-| API | FastAPI, Python 3.12 |
-| Stores | PostgreSQL 16 (metadata, source of truth), OpenSearch 2.19 (BM25 + kNN) |
-| Ingestion | Apache Airflow, Docling (PDF/HTML/Markdown parsing) |
-| Retrieval | BM25 + dense embeddings, fused with Reciprocal Rank Fusion |
-| LLM | Ollama (local-first, provider-swappable) |
-| Agent | LangGraph |
-| Observability | Langfuse (tracing + cost) |
-| Caching | Redis (semantic cache) |
-| Interfaces | Gradio (chat), Telegram bot (on-call) |
-| Tooling | UV, Ruff, MyPy, Pytest, Docker Compose |
+| **HTTP API** | `GET /health` · `POST /search` · `POST /ask` |
+| **Chat UI** | `python scripts/ui.py` → <http://127.0.0.1:7861> |
+| **On-call bot** | `python scripts/telegram_bot.py` (needs a bot token) |
+| **CLI** | `python scripts/ask.py "question"` · `python scripts/ingest.py` |
 
-## Roadmap
+![OpenAPI docs for the Platform Copilot service](docs/images/api-docs.png)
 
-Built as progressive milestones — each one ships a working slice and proves a distinct skill.
-
-| Milestone | What ships | Skill it proves |
-|---|---|---|
-| **M0** Foundation | Compose (Postgres, OpenSearch, Redis, Ollama), FastAPI health, lint/type/test wired, ADR-0001 | Reproducible platform, one-command up |
-| **M1** Ingestion | Airflow DAG ingesting docs → Docling parse → metadata in Postgres; idempotent + deduped | Robust real-world ingestion |
-| **M2** Keyword baseline | OpenSearch index design, BM25, Query DSL, filters + a retrieval eval harness (recall@k) | Measured baseline before adding ML |
-| **M3** Hybrid search | Section-aware chunking, embeddings, RRF; eval hybrid vs BM25 vs vector | Retrieval-quality engineering |
-| **M4** RAG | Ollama, grounded answers + citations, SSE streaming, Gradio UI | Grounding + hallucination control |
-| **M5** Production | Langfuse tracing, Redis semantic cache, cost/latency dashboards, evals in CI | Observability + FinOps + reliability |
-| **M6** Agentic | LangGraph state machine (guardrail → grade → rewrite → retry), Telegram bot | Knowing when agency earns its complexity |
-| **M7** Platform integration | Ingest the live platform's drift/monitoring alerts + model cards; k8s manifests; SLOs; ADRs | Systems integration at platform scope |
-
-## Corpus
-
-Two sources, both real:
-
-1. **The platform's own docs** — ADRs, runbooks, model cards, and drift reports from
-   `ai-workload-platform` (a seed set is copied into `corpus/` so the repo is self-contained).
-2. **Public SRE postmortems** — to exercise the ingestion pipeline against messy external
-   HTML/PDF and give the copilot breadth.
+---
 
 ## Quickstart
 
 ```bash
-# 1. Bring up the data plane
+# 1. Data plane (Postgres, OpenSearch, Redis)
 docker compose up -d
 
-# 2. Install deps (UV) and run the API
-uv sync
-uv run uvicorn platform_copilot.main:app --reload
+# 2. A local model
+ollama pull llama3.2
 
-# 3. Verify
-curl localhost:8000/health        # -> {"status": "ok"}
-uv run pytest                      # M0 test suite is green
+# 3. Install + ingest + ask
+pip install -e ".[agent]"
+cp .env.example .env
+python scripts/ingest.py
+python scripts/ask.py "What are the first steps for a drift alert?"
+
+# 4. Serve
+uvicorn platform_copilot.main:app --reload      # API + /docs
+python scripts/ui.py                            # Gradio chat UI
 ```
 
-Requires Docker Desktop, Python 3.12+, and the [UV](https://docs.astral.sh/uv/) package manager.
+Offline test suite (no Docker, no model required):
+
+```bash
+pytest -q      # 40 passed
+```
+
+---
+
+## Verified end to end
+
+Not a claim — the actual output of `POST /ask` against live OpenSearch + Ollama:
+
+```text
+ANSWER:
+Here are the first steps for a Demand-Forecaster Drift Alert:
+1. Open the monitoring dashboard and confirm which features breached PSI [1].
+2. Check the feature materialization job ran on schedule and did not error [1].
+3. Compare the current input distribution against the training baseline [1].
+
+CITATIONS:
+  [1] Runbook — Demand Forecaster Drift Alert > First steps   (runbook-drift-alert::3)
+  [2] Runbook — Demand Forecaster Drift Alert > Resolution    (runbook-drift-alert::4)
+  [3] Runbook — Demand Forecaster Drift Alert > Escalation    (runbook-drift-alert::5)
+```
+
+Hybrid retrieval ranks the runbook's *First steps* section first, and the answer is drawn from
+it rather than from model priors.
+
+**Two real bugs surfaced only by running it** (both now regression-tested):
+
+1. Yes/no parsing matched `"no"` inside `"can`**`no`**`t"`, turning a non-answer into a refusal.
+   Parsing is now word-boundary based and tri-state.
+2. The scope guardrail trusted a small classifier's world knowledge and refused valid
+   questions — fixed by the retrieval corroboration described above.
+
+---
+
+## Design decisions
+
+Every non-obvious choice is recorded as an ADR in [`docs/adr/`](docs/adr/), starting with
+[0001 — Agentic RAG architecture](docs/adr/0001-agentic-rag-architecture.md): why hybrid search
+over pure vectors, why one OpenSearch cluster instead of pgvector plus a vector DB, why a
+local-first LLM, and where an agent earns its extra complexity.
+
+---
 
 ## Repository layout
 
@@ -117,7 +187,7 @@ Requires Docker Desktop, Python 3.12+, and the [UV](https://docs.astral.sh/uv/) 
 platform-copilot/
 ├── src/platform_copilot/
 │   ├── routers/        # FastAPI endpoints (health, search, ask)
-│   ├── services/       # opensearch / ollama / agents / embeddings / cache / telegram
+│   ├── services/       # retrieval · rag · agent · llm · embeddings · cache · observability
 │   ├── models/         # SQLAlchemy models
 │   ├── schemas/        # Pydantic schemas
 │   ├── config.py       # Settings (pydantic-settings)
@@ -127,62 +197,40 @@ platform-copilot/
 ├── kubernetes/         # ConfigMap · Deployment · Service
 ├── corpus/             # Seed documents to ingest
 ├── docs/adr/           # Architecture Decision Records
-├── tests/
+├── tests/              # 40 tests, all runnable without Docker
 ├── Dockerfile
 ├── compose.yml
 └── pyproject.toml
 ```
 
-## Design decisions
+---
 
-Every non-obvious choice is recorded as an ADR in [`docs/adr/`](docs/adr/). Start with
-[0001 — Agentic RAG architecture](docs/adr/0001-agentic-rag-architecture.md).
+## Status — what runs, and what does not
 
-## Status
+**Live-verified.** Docker Postgres + OpenSearch + Redis with a local Ollama: `scripts/ingest.py`
+loads the corpus, `POST /search`, `POST /ask`, the CLI and the Gradio UI all return real,
+cited answers. Both screenshots above are of this running service.
 
-**Live-verified end-to-end** — Docker Postgres + OpenSearch + Redis with a local Ollama
-(`llama3.2:1b`): `scripts/ingest.py` loads the corpus, and `scripts/ask.py` returns a grounded,
-cited answer that ranks the runbook's *First steps* section as `[1]`. The real OpenSearch/Ollama
-clients run against the stack (a first live run also surfaced and fixed an `opensearch-py`
-keyword-arg bug — the value of actually running it). The HTTP API serves too — `GET /health`,
-`POST /search`, and `POST /ask` all return real results under uvicorn.
+**40 tests green, none requiring Docker or a model.** Every external system sits behind a
+Protocol with an in-memory fake, so the whole pipeline — including the agent's control flow,
+driven by a scripted LLM — is unit-tested with zero infrastructure.
 
-Honest status — **40 tests green, all runnable without Docker:**
+| Milestone | State |
+|---|---|
+| M0 foundation — API, health, settings, compose | ✅ verified |
+| M1 ingestion — Markdown/HTML parse, idempotent Postgres store, Airflow DAG | ✅ verified (DAG compiles; runs in Airflow) |
+| M2/M3 retrieval — chunking, BM25 + kNN, RRF, recall@k / MRR eval | ✅ verified |
+| M4 RAG — grounded prompt, citations, `/search` + `/ask` | ✅ verified |
+| M5 hardening — Redis cache, observability wrapper | ✅ verified |
+| M6 agent + interfaces — LangGraph agent (default), Gradio, Telegram | ✅ agent + Gradio verified |
+| M7 deploy — Dockerfile, Kubernetes manifests | ⚠️ written, YAML validated, not deployed |
 
-- **M0 foundation** — FastAPI app, health endpoint, settings, Docker Compose stack.
-- **M1 ingestion** — Markdown + HTML parsers → normalized docs; idempotent SQLAlchemy
-  document/chunk store (SQLite-tested, Postgres-ready), plus a scheduled Airflow DAG in
-  [`airflow/dags/`](airflow/dags/) wrapping the same idempotent ingest path.
-- **M2 / M3 retrieval** — section-aware chunking, BM25 + kNN query builders, index mapping,
-  RRF fusion, recall@k / MRR eval, embeddings interface; the `HybridRetriever` runs both arms
-  and fuses them.
-- **M4 RAG** — grounded prompt + citations, the `RagPipeline`, and the `/search` + `/ask`
-  endpoints. The full **retrieve → fuse → prompt → generate → cite** flow is unit-tested with
-  in-memory fakes.
-- **M6 agent + interfaces** — a LangGraph state machine (guardrail → retrieve → grade → rewrite
-  → retry → generate) **backs `/ask` by default** (`USE_AGENT`), plus a Gradio chat UI and a
-  Telegram bot that share one unit-tested `render_answer` formatter.
-- **M5 hardening** — a Redis cache (identical questions skip retrieval + the LLM) and an
-  observability wrapper (per-query latency / retrieval size / response size), layered
-  `Observed → Cached → RAG`; both tested with in-memory fakes.
-- **M7 deploy** — `Dockerfile` plus Kubernetes ConfigMap / Deployment / Service with health
-  probes, resource limits, and a hardened `securityContext`.
+**Not executed here, stated plainly:** the Telegram bot needs a bot token; live Langfuse needs
+keys created through its UI (`docker compose --profile observability up -d langfuse-db langfuse`);
+the Airflow DAG needs an Airflow runtime; the Kubernetes manifests need a built and pushed
+image. Each is written and validated as far as it can be offline — YAML parses, the DAG
+compiles, the Gradio UI constructs — but not run.
 
-The real OpenSearch, Ollama, Jina, Redis, and Langfuse clients are written behind interfaces and
-ready to plug in; they run against the live stack and are marked `INTEGRATION-ONLY` in the source
-(not exercised by the offline tests).
-
-**Scope is corroborated, not trusted.** Running the agent against a real model exposed two bugs,
-both now covered by regression tests: yes/no parsing matched "no" inside "can**no**t", and a small
-classifier misread platform jargon ("promotion gate") and refused valid questions. The agent now
-refuses only when the classifier says no *and* retrieval found nothing relevant — the corpus
-defines the scope, not the model's world knowledge. The agent costs ~3 LLM round-trips (~38s vs
-~10s single-shot on a CPU-only 1B model); set `USE_AGENT=false` for single-shot RAG.
-
-**Not executed here, stated plainly:** the Telegram bot needs a bot token, live Langfuse needs
-keys created through its UI (`docker compose --profile observability up -d langfuse-db langfuse`),
-the Airflow DAG runs inside Airflow, and the Kubernetes manifests need a built and pushed image.
-Each is written and validated as far as it can be offline — YAML parses, the DAG compiles, the
-Gradio UI constructs — but not run.
-
-Nothing is mocked to look further along than it is.
+Embeddings default to a deterministic placeholder unless `JINA_API_KEY` is set, so the semantic
+arm is weak out of the box while BM25 carries retrieval. Nothing here is mocked to look further
+along than it is.
