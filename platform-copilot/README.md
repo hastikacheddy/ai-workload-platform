@@ -122,10 +122,13 @@ platform-copilot/
 │   ├── schemas/        # Pydantic schemas
 │   ├── config.py       # Settings (pydantic-settings)
 │   └── main.py         # App factory
-├── airflow/            # Ingestion DAGs (M1+)
+├── scripts/            # ingest.py · ask.py · ui.py (Gradio) · telegram_bot.py
+├── airflow/dags/       # Scheduled ingestion DAG
+├── kubernetes/         # ConfigMap · Deployment · Service
 ├── corpus/             # Seed documents to ingest
 ├── docs/adr/           # Architecture Decision Records
 ├── tests/
+├── Dockerfile
 ├── compose.yml
 └── pyproject.toml
 ```
@@ -144,7 +147,7 @@ clients run against the stack (a first live run also surfaced and fixed an `open
 keyword-arg bug — the value of actually running it). The HTTP API serves too — `GET /health`,
 `POST /search`, and `POST /ask` all return real results under uvicorn.
 
-Honest status — **33 tests green, all runnable without Docker:**
+Honest status — **40 tests green, all runnable without Docker:**
 
 - **M0 foundation** — FastAPI app, health endpoint, settings, Docker Compose stack.
 - **M1 ingestion** — Markdown + HTML parsers → normalized docs; idempotent SQLAlchemy
@@ -156,17 +159,30 @@ Honest status — **33 tests green, all runnable without Docker:**
 - **M4 RAG** — grounded prompt + citations, the `RagPipeline`, and the `/search` + `/ask`
   endpoints. The full **retrieve → fuse → prompt → generate → cite** flow is unit-tested with
   in-memory fakes.
-- **M6 agent** — a LangGraph state machine (guardrail → retrieve → grade → rewrite → retry →
-  generate). Guardrail refusal, relevance grading, and the rewrite-retry loop are unit-tested by
-  driving the graph with a scripted fake LLM.
+- **M6 agent + interfaces** — a LangGraph state machine (guardrail → retrieve → grade → rewrite
+  → retry → generate) **backs `/ask` by default** (`USE_AGENT`), plus a Gradio chat UI and a
+  Telegram bot that share one unit-tested `render_answer` formatter.
 - **M5 hardening** — a Redis cache (identical questions skip retrieval + the LLM) and an
   observability wrapper (per-query latency / retrieval size / response size), layered
   `Observed → Cached → RAG`; both tested with in-memory fakes.
+- **M7 deploy** — `Dockerfile` plus Kubernetes ConfigMap / Deployment / Service with health
+  probes, resource limits, and a hardened `securityContext`.
 
 The real OpenSearch, Ollama, Jina, Redis, and Langfuse clients are written behind interfaces and
 ready to plug in; they run against the live stack and are marked `INTEGRATION-ONLY` in the source
-(not exercised by the offline tests). **Remaining:** live Langfuse tracing, the Gradio UI, the Telegram
-bot, and Kubernetes manifests. The agent is built and tested; making it the default `/ask` engine
-is a config flip once the live LLM is in.
+(not exercised by the offline tests).
+
+**Scope is corroborated, not trusted.** Running the agent against a real model exposed two bugs,
+both now covered by regression tests: yes/no parsing matched "no" inside "can**no**t", and a small
+classifier misread platform jargon ("promotion gate") and refused valid questions. The agent now
+refuses only when the classifier says no *and* retrieval found nothing relevant — the corpus
+defines the scope, not the model's world knowledge. The agent costs ~3 LLM round-trips (~38s vs
+~10s single-shot on a CPU-only 1B model); set `USE_AGENT=false` for single-shot RAG.
+
+**Not executed here, stated plainly:** the Telegram bot needs a bot token, live Langfuse needs
+keys created through its UI (`docker compose --profile observability up -d langfuse-db langfuse`),
+the Airflow DAG runs inside Airflow, and the Kubernetes manifests need a built and pushed image.
+Each is written and validated as far as it can be offline — YAML parses, the DAG compiles, the
+Gradio UI constructs — but not run.
 
 Nothing is mocked to look further along than it is.

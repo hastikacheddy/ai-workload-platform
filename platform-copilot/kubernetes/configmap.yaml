@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-copilot-config
+  labels:
+    app.kubernetes.io/name: platform-copilot
+    app.kubernetes.io/part-of: ai-platform
+data:
+  # In-cluster service names; secrets (JINA_API_KEY, LANGFUSE_*, TELEGRAM_*)
+  # come from the platform-copilot-secrets Secret instead.
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "platform_copilot"
+  OPENSEARCH_HOST: "opensearch"
+  OPENSEARCH_PORT: "9200"
+  OPENSEARCH_INDEX: "platform_docs"
+  OLLAMA_BASE_URL: "http://ollama:11434"
+  OLLAMA_MODEL: "llama3.2"
+  REDIS_URL: "redis://redis:6379/0"
+  # Agent adds ~3 LLM round-trips per request; set false for single-shot RAG.
+  USE_AGENT: "true"
