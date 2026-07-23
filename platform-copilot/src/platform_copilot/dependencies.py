@@ -63,8 +63,16 @@ def get_pipeline() -> AnswerEngine:
     from platform_copilot.services.rag.observed import ObservedPipeline
 
     settings = get_settings()
-    base = RagPipeline(
-        get_retriever(), OllamaLLM(settings.ollama_base_url, settings.ollama_model)
-    )
+    llm = OllamaLLM(settings.ollama_base_url, settings.ollama_model)
+
+    base: AnswerEngine
+    if settings.use_agent:
+        # Lazy: only the agent path needs langgraph installed.
+        from platform_copilot.services.agent.graph import AgentPipeline
+
+        base = AgentPipeline(get_retriever(), llm)
+    else:
+        base = RagPipeline(get_retriever(), llm)
+
     cached = CachedPipeline(base, RedisCache(settings.redis_url))
     return ObservedPipeline(cached, _build_trace_sink())

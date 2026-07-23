@@ -1,9 +1,12 @@
 """The agentic RAG loop as a LangGraph state machine.
 
-    START -> guardrail -> (reject | retrieve)
-    retrieve -> grade -> (generate | rewrite)
+    START -> guardrail -> retrieve -> grade -> (generate | rewrite | reject)
     rewrite -> retrieve            (bounded by max_attempts)
     generate / reject -> END
+
+Scope is *corroborated*, not trusted: the classifier's verdict is carried in state
+and only acted on after retrieval, so a weak classifier that misreads domain jargon
+cannot refuse a question the corpus can actually answer.
 
 The agent only adds control flow a static chain can't express: refusing out-of-scope
 questions, detecting low-relevance retrievals, and rewriting + retrying. Every
@@ -39,6 +42,8 @@ class AgentState(TypedDict, total=False):
     in_scope: bool
     answer: str
     citations: list[dict[str, str]]
+    k: int
+    filters: dict[str, str] | None
 
 
 def build_agent(
@@ -59,7 +64,11 @@ def build_agent(
         return {"answer": REFUSAL, "citations": [], "chunks": []}
 
     def retrieve(state: AgentState) -> AgentState:
-        return {"chunks": retriever.retrieve(state["query"], k=k)}
+        return {
+            "chunks": retriever.retrieve(
+                state["query"], k=state.get("k") or k, filters=state.get("filters")
+            )
+        }
 
     def grade(state: AgentState) -> AgentState:
         return {"relevant": grade_relevance(llm, state["question"], state.get("chunks", []))}
@@ -75,12 +84,14 @@ def build_agent(
         text = llm.generate(build_messages(state["question"], chunks))
         return {"answer": text, "citations": citations(chunks)}
 
-    def after_guardrail(state: AgentState) -> str:
-        return "retrieve" if state.get("in_scope") else "reject"
-
     def after_grade(state: AgentState) -> str:
         if state.get("relevant"):
             return "generate"
+        # Refuse only when BOTH signals agree the question is off-topic: the
+        # classifier said no AND retrieval surfaced nothing relevant. This stops a
+        # weak classifier from refusing valid questions the corpus can answer.
+        if not state.get("in_scope", True):
+            return "reject"
         if state.get("attempts", 0) < max_attempts:
             return "rewrite"
         return "generate"  # retries exhausted: answer with best effort (prompt admits gaps)
@@ -94,12 +105,12 @@ def build_agent(
     graph.add_node("generate", generate)
 
     graph.add_edge(START, "guardrail")
-    graph.add_conditional_edges(
-        "guardrail", after_guardrail, {"retrieve": "retrieve", "reject": "reject"}
-    )
+    graph.add_edge("guardrail", "retrieve")  # scope is corroborated after retrieval
     graph.add_edge("retrieve", "grade")
     graph.add_conditional_edges(
-        "grade", after_grade, {"generate": "generate", "rewrite": "rewrite"}
+        "grade",
+        after_grade,
+        {"generate": "generate", "rewrite": "rewrite", "reject": "reject"},
     )
     graph.add_edge("rewrite", "retrieve")
     graph.add_edge("reject", END)
@@ -120,8 +131,14 @@ class AgentPipeline:
     ) -> None:
         self._graph = build_agent(retriever, llm, max_attempts=max_attempts, k=k)
 
-    def answer(self, question: str) -> Answer:
-        final = self._graph.invoke({"question": question})
+    def answer(
+        self,
+        question: str,
+        *,
+        k: int = 5,
+        filters: dict[str, str] | None = None,
+    ) -> Answer:
+        final = self._graph.invoke({"question": question, "k": k, "filters": filters})
         return Answer(
             answer=final.get("answer", ""),
             citations=final.get("citations", []),

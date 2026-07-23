@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2"
 
+    # Agent: back /ask with the LangGraph agent (guardrail -> grade -> rewrite -> retry)
+    # instead of single-shot RAG. Costs extra LLM round-trips per request.
+    use_agent: bool = True
+
     # Redis
     redis_url: str = "redis://localhost:6379/0"
 
