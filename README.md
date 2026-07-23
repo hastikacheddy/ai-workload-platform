@@ -105,6 +105,7 @@ in [`docs/platform/ARCHITECTURE.md`](docs/platform/ARCHITECTURE.md).
 | **Reliability & multi-tenancy** | Failure catalogue, degradation ladders, canary→stable fallback, per-tenant GPU quotas | [RELIABILITY](docs/platform/RELIABILITY.md) |
 | **FinOps** | Cost per request, cost per model, idle-GPU detection, monthly burn | [`finops.py`](src/platform/finops.py) · [COST_MODEL](docs/platform/COST_MODEL.md) |
 | **LLMOps** | Prompt registry, guardrails (PII + injection), embeddings, vector store, RAG, evaluation gate | [`src/llmops/`](src/llmops/) |
+| **Agentic RAG copilot** | Hybrid-search RAG service (BM25 + kNN, RRF-fused) with a LangGraph agent — grounded, cited answers over the platform's runbooks/ADRs; verified live end-to-end | [`platform-copilot/`](platform-copilot/) |
 | **Cloud architecture** | Azure AKS + GPU node pool + ACR + Blob + Key Vault + Monitor, as Terraform (`terraform validate` passes) | [`infra/azure/`](infra/azure/) · [ADR-001](docs/adr/001-why-kubernetes.md) |
 
 ---
