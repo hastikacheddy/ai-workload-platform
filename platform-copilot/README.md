@@ -141,13 +141,15 @@ Every non-obvious choice is recorded as an ADR in [`docs/adr/`](docs/adr/). Star
 (`llama3.2:1b`): `scripts/ingest.py` loads the corpus, and `scripts/ask.py` returns a grounded,
 cited answer that ranks the runbook's *First steps* section as `[1]`. The real OpenSearch/Ollama
 clients run against the stack (a first live run also surfaced and fixed an `opensearch-py`
-keyword-arg bug — the value of actually running it).
+keyword-arg bug — the value of actually running it). The HTTP API serves too — `GET /health`,
+`POST /search`, and `POST /ask` all return real results under uvicorn.
 
 Honest status — **33 tests green, all runnable without Docker:**
 
 - **M0 foundation** — FastAPI app, health endpoint, settings, Docker Compose stack.
 - **M1 ingestion** — Markdown + HTML parsers → normalized docs; idempotent SQLAlchemy
-  document/chunk store (SQLite-tested, Postgres-ready). *The Airflow DAG is the remaining piece.*
+  document/chunk store (SQLite-tested, Postgres-ready), plus a scheduled Airflow DAG in
+  [`airflow/dags/`](airflow/dags/) wrapping the same idempotent ingest path.
 - **M2 / M3 retrieval** — section-aware chunking, BM25 + kNN query builders, index mapping,
   RRF fusion, recall@k / MRR eval, embeddings interface; the `HybridRetriever` runs both arms
   and fuses them.
@@ -163,8 +165,7 @@ Honest status — **33 tests green, all runnable without Docker:**
 
 The real OpenSearch, Ollama, Jina, Redis, and Langfuse clients are written behind interfaces and
 ready to plug in; they run against the live stack and are marked `INTEGRATION-ONLY` in the source
-(not exercised by the offline tests). **Remaining — all needs the live stack:** running it
-end-to-end against a real cluster + LLM, the Airflow ingestion DAG, the Gradio UI, the Telegram
+(not exercised by the offline tests). **Remaining:** live Langfuse tracing, the Gradio UI, the Telegram
 bot, and Kubernetes manifests. The agent is built and tested; making it the default `/ask` engine
 is a config flip once the live LLM is in.
 
