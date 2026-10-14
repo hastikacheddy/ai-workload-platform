@@ -25,6 +25,8 @@ ui = ["gradio>=5.0"]                    # M4   chat UI
 observability = ["langfuse>=2.53"]      # M5   tracing + cost
 agent = ["langgraph>=0.2"]              # M6   agentic state machine
 bot = ["python-telegram-bot>=21.0"]     # M6   on-call bot
+transformers = ["transformers>=4.44", "torch", "accelerate>=0.33"]  # local LLM (HF Space demo)
+st = ["sentence-transformers>=3.0"]     # semantic embeddings (HF Space demo)
 
 [dependency-groups]
 dev = [
