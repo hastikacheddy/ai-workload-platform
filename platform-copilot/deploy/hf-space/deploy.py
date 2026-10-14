@@ -16,7 +16,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SERVICE_ROOT = HERE.parents[1]  # platform-copilot/
-REPO_ID = os.environ.get("SPACE_REPO_ID", "Hastika06/platform-copilot")
+# The base name `Hastika06/platform-copilot` hosts the free STATIC showcase
+# (see ../hf-space-static). This interactive Gradio Space needs HF PRO, so it
+# deploys under a distinct name to avoid overwriting the live static page.
+REPO_ID = os.environ.get("SPACE_REPO_ID", "Hastika06/platform-copilot-live")
 
 
 def assemble(bundle: Path) -> None:

@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Platform Copilot</title>
+<meta name="description" content="A retrieval-augmented copilot that answers operational questions about an AI/ML platform, grounded in its own runbooks, ADRs and design docs, with citations.">
+<style>
+  :root{
+    --bg:#f7f8fa; --panel:#ffffff; --ink:#15181d; --muted:#5b6472; --line:#e4e7ec;
+    --accent:#3b5bdb; --accent-soft:#eaeefb; --code:#0b1020; --code-ink:#e6e9f2; --chip:#eef1f6;
+    --ok:#1a7f52; --ok-soft:#e5f4ec;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0e1116; --panel:#161a21; --ink:#e6e9ef; --muted:#9aa4b2; --line:#272d37;
+      --accent:#8aa2ff; --accent-soft:#1b2440; --code:#0a0d13; --code-ink:#dfe4f0; --chip:#1c222b;
+      --ok:#5fd0a0; --ok-soft:#142a20;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0e1116; --panel:#161a21; --ink:#e6e9ef; --muted:#9aa4b2; --line:#272d37;
+    --accent:#8aa2ff; --accent-soft:#1b2440; --code:#0a0d13; --code-ink:#dfe4f0; --chip:#1c222b;
+    --ok:#5fd0a0; --ok-soft:#142a20;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:860px; margin:0 auto; padding:0 16px}
+  header{padding:56px 0 28px; border-bottom:1px solid var(--line)}
+  .eyebrow{color:var(--accent); font-weight:600; letter-spacing:.06em; text-transform:uppercase; font-size:12.5px; margin:0 0 10px}
+  h1{font-size:clamp(30px,6vw,44px); line-height:1.1; margin:0 0 12px; letter-spacing:-.02em}
+  .lede{font-size:clamp(16px,2.4vw,19px); color:var(--muted); margin:0 0 22px; max-width:62ch}
+  .links a{
+    display:inline-block; text-decoration:none; font-weight:600; font-size:14px;
+    padding:9px 15px; border-radius:9px; margin:0 8px 8px 0; border:1px solid var(--line);
+    color:var(--ink); background:var(--panel);
+  }
+  .links a.primary{background:var(--accent); color:#fff; border-color:var(--accent)}
+  .note{
+    margin:26px 0 0; padding:14px 16px; border:1px solid var(--line); border-left:3px solid var(--accent);
+    border-radius:10px; background:var(--panel); color:var(--muted); font-size:14.5px;
+  }
+  .note b{color:var(--ink)}
+  section{padding:40px 0; border-bottom:1px solid var(--line)}
+  h2{font-size:22px; margin:0 0 6px; letter-spacing:-.01em}
+  .sub{color:var(--muted); margin:0 0 22px; font-size:15px}
+  .grid{display:grid; grid-template-columns:1fr 1fr; gap:14px}
+  @media (max-width:640px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px}
+  .card h3{margin:0 0 6px; font-size:15.5px}
+  .card p{margin:0; color:var(--muted); font-size:14px}
+  details{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:0; margin:0 0 12px; overflow:hidden;
+  }
+  details[open]{border-color:var(--accent)}
+  summary{
+    cursor:pointer; padding:16px 18px; font-weight:600; list-style:none; font-size:15.5px;
+    display:flex; align-items:flex-start; gap:10px;
+  }
+  summary::-webkit-details-marker{display:none}
+  summary::before{content:"Q"; color:var(--accent); font-weight:700; flex:none}
+  .answer{padding:0 18px 18px; border-top:1px solid var(--line); margin-top:2px}
+  .answer p{white-space:pre-wrap; margin:14px 0 0}
+  .sources{margin-top:16px; padding-top:12px; border-top:1px dashed var(--line)}
+  .sources .lbl{font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:0 0 8px}
+  .src{font-size:13px; color:var(--muted); display:flex; gap:8px; margin:5px 0}
+  .src .n{color:var(--accent); font-weight:700; flex:none}
+  .diagram{
+    background:var(--code); color:var(--code-ink); border-radius:12px; padding:18px;
+    font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; overflow-x:auto; white-space:pre;
+  }
+  ul.feat{list-style:none; padding:0; margin:0}
+  ul.feat li{padding:9px 0 9px 26px; position:relative; border-bottom:1px solid var(--line); font-size:14.5px}
+  ul.feat li:last-child{border-bottom:none}
+  ul.feat li::before{content:"→"; position:absolute; left:0; color:var(--accent); font-weight:700}
+  ul.feat b{color:var(--ink)}
+  .chip{display:inline-block; font-size:12px; background:var(--chip); border:1px solid var(--line);
+    border-radius:999px; padding:3px 10px; margin:0 6px 6px 0; color:var(--muted)}
+  code{background:var(--chip); padding:1px 6px; border-radius:6px; font-size:13px}
+  footer{padding:30px 0 56px; color:var(--muted); font-size:13.5px}
+  footer a{color:var(--accent)}
+  a.inline{color:var(--accent); text-decoration:none; font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">Agentic RAG · platform operations</p>
+    <h1>Platform Copilot</h1>
+    <p class="lede">A retrieval-augmented copilot that answers operational questions about an
+      AI/ML platform — grounded strictly in the platform's own <b>runbooks, ADRs, and design
+      docs</b>, and <b>citing its sources</b>.</p>
+    <div class="links">
+      <a class="primary" href="https://github.com/hastikacheddy/ai-workload-platform/tree/main/platform-copilot">View the code</a>
+      <a href="https://github.com/hastikacheddy/ai-workload-platform">AI Platform repo</a>
+    </div>
+    <p class="note"><b>About this page.</b> This is a static showcase. The interactive service
+      runs a full hybrid-search + LangGraph-agent stack (OpenSearch · PostgreSQL · Redis · a
+      served LLM) — hosting that live on Hugging Face needs a PRO Space, so this page instead
+      shows <b>example answers</b> grounded in the platform's documents and cited to them,
+      illustrating how the copilot responds. The live service generates these at query time;
+      the complete, runnable code is in the repository.</p>
+  </header>
+
+  <section>
+    <h2>What it does</h2>
+    <p class="sub">Ask an operational question; get a concise, grounded answer with sources.</p>
+    <div class="grid">
+      <div class="card"><h3>Grounded + cited</h3><p>Answers only from the indexed corpus and cite each source as <code>[n]</code>; says "I don't know" when the docs don't cover it.</p></div>
+      <div class="card"><h3>Hybrid retrieval</h3><p>Keyword (BM25-style) and vector (embedding) arms fused with Reciprocal Rank Fusion, so both exact terms and meaning match.</p></div>
+      <div class="card"><h3>Agentic loop</h3><p>A LangGraph agent guards scope, retrieves, grades relevance, rewrites and retries before answering — not a single-shot prompt.</p></div>
+      <div class="card"><h3>Observable</h3><p>Redis response cache, trace/cost sink, and an ingestion job scheduled with Airflow — built as a service, not a notebook.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Example answers</h2>
+    <p class="sub">Illustrative answers grounded in the platform's own docs, with citations. Click a question to expand. The live service generates these at query time.</p>
+
+    <details>
+      <summary>What are the first steps when a demand-forecaster drift alert fires?</summary>
+      <div class="answer">
+        <p>Work the <code>DriftHigh</code> runbook in order [1]:
+1. Open the monitoring dashboard and confirm which input features breached PSI (&gt; 0.2).
+2. Check the feature-materialization job ran on schedule and did not error.
+3. Compare the current input distribution against the training baseline.
+4. If features are stale or wrong, fix ingestion first — do not retrain on bad data.
+
+If it is a genuine demand shift, trigger the weekly training DAG to refresh the model and confirm the new candidate clears the promotion gate before it serves traffic [2]. If the gate keeps rejecting candidates or error stays elevated, page the platform on-call and open an incident [3].</p>
+        <div class="sources">
+          <p class="lbl">Sources</p>
+          <div class="src"><span class="n">[1]</span><span>Runbook — Demand Forecaster Drift Alert &gt; First steps</span></div>
+          <div class="src"><span class="n">[2]</span><span>Runbook — Demand Forecaster Drift Alert &gt; Resolution</span></div>
+          <div class="src"><span class="n">[3]</span><span>Runbook — Demand Forecaster Drift Alert &gt; Escalation</span></div>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>Why was Kubernetes chosen as the platform substrate instead of serverless?</summary>
+      <div class="answer">
+        <p>So one scheduler can run every workload — CPU APIs, GPU LLM serving, batch and distributed training, and Airflow — which is what makes GPU cost control (priority classes, preemption, quotas) possible at all [1]. It also gives a declarative topology, so disaster recovery becomes "re-apply config", and it runs KServe and Ray natively [1].
+
+Managed serverless GPU endpoints were considered and rejected: weak multi-tenant GPU economics, vendor lock-in, and no shared substrate for training + Airflow + serving — and the shared substrate is precisely the platform's value [2].</p>
+        <div class="sources">
+          <p class="lbl">Sources</p>
+          <div class="src"><span class="n">[1]</span><span>ADR-001 — Kubernetes (AKS) as the platform substrate &gt; Decision / Consequences</span></div>
+          <div class="src"><span class="n">[2]</span><span>ADR-001 — Kubernetes (AKS) as the platform substrate &gt; Alternatives considered</span></div>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>How does the platform decide whether a workload runs on CPU or GPU?</summary>
+      <div class="answer">
+        <p>Placement is derived from the workload, not requested by the caller [1]. The platform maps a model's framework to a compute pool: GPU-bound runtimes (vLLM, Transformers) go to the GPU pool; everything else (LightGBM, sklearn/ONNX) goes to the CPU pool [1].
+
+The GPU nodes carry a <code>nvidia.com/gpu=present:NoSchedule</code> taint, so only workloads that actually need a GPU — and therefore tolerate that taint — ever land there; a cheap CPU model can't silently occupy a $3/hr GPU node [2].</p>
+        <div class="sources">
+          <p class="lbl">Sources</p>
+          <div class="src"><span class="n">[1]</span><span>AI Platform — Architecture &gt; 4. Compute placement</span></div>
+          <div class="src"><span class="n">[2]</span><span>GPU Infrastructure Design &gt; 1. Two pools, one cluster</span></div>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>Why is vLLM the default LLM serving engine?</summary>
+      <div class="answer">
+        <p>Two properties decide it [1]: <b>PagedAttention</b>, which nearly eliminates KV-cache fragmentation so more sequences fit per GPU, and <b>continuous batching</b>, which lets new requests join the running batch instead of waiting for it to drain. Together that is roughly a 5–8× throughput gain over vanilla HuggingFace generation on the same GPU.
+
+The cost model shows that throughput gain is about a <b>7× reduction in cost per request</b> — so it is an economics decision, not just a latency one [2]. Vanilla HF is kept only as the benchmark baseline; TGI and TensorRT-LLM are candidate backends behind the same interface [3].</p>
+        <div class="sources">
+          <p class="lbl">Sources</p>
+          <div class="src"><span class="n">[1]</span><span>ADR-002 — vLLM as the default LLM serving engine &gt; Decision</span></div>
+          <div class="src"><span class="n">[2]</span><span>AI Platform — Cost Model (FinOps) &gt; Worked cost/request</span></div>
+          <div class="src"><span class="n">[3]</span><span>ADR-002 — vLLM as the default LLM serving engine &gt; Alternatives considered</span></div>
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <section>
+    <h2>How it works</h2>
+    <p class="sub">Retrieve → ground → generate → cite, behind a FastAPI service.</p>
+    <div class="diagram">question
+   │
+   ▼
+guardrail (scope check)
+   │
+   ▼
+hybrid retrieve ──► keyword arm ─┐
+                                 ├─► RRF fusion ─► top-k chunks
+                 ►  vector arm  ─┘
+   │
+   ▼
+grounded prompt (numbered context)
+   │
+   ▼
+LLM  ──► grade → rewrite → retry (agent)
+   │
+   ▼
+answer + citations [n]</div>
+    <ul class="feat" style="margin-top:18px">
+      <li><b>Corpus:</b> the platform's ADRs, 7 design docs (architecture, GPU, reliability, scaling, cost, DR, security) and an incident runbook.</li>
+      <li><b>Retrieval:</b> embeddings + keyword, fused with RRF; section-aware chunking keeps a clean heading path for every citation.</li>
+      <li><b>Generation:</b> a system prompt that forbids ungrounded claims; citations are attached from the retrieved chunks, so sources are always accurate.</li>
+      <li><b>Interfaces:</b> FastAPI <code>/search</code> + <code>/ask</code>, a Gradio chat UI, and a Telegram bot — all sharing one tested render path.</li>
+    </ul>
+    <div style="margin-top:18px">
+      <span class="chip">FastAPI</span><span class="chip">OpenSearch (BM25+kNN)</span>
+      <span class="chip">PostgreSQL</span><span class="chip">Redis</span><span class="chip">LangGraph</span>
+      <span class="chip">sentence-transformers</span><span class="chip">Gradio</span><span class="chip">Airflow</span>
+      <span class="chip">Docker + K8s</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Run the real thing</h2>
+    <p class="sub">The full interactive service, with tests, lives in the repository.</p>
+    <div class="diagram">git clone https://github.com/hastikacheddy/ai-workload-platform
+cd ai-workload-platform/platform-copilot
+docker compose up -d          # OpenSearch · PostgreSQL · Redis
+python scripts/ingest.py      # index the corpus
+python scripts/ui.py          # Gradio chat  →  http://127.0.0.1:7861</div>
+    <p style="margin-top:16px; color:var(--muted); font-size:14.5px">
+      Code &amp; corpus:
+      <a class="inline" href="https://github.com/hastikacheddy/ai-workload-platform/tree/main/platform-copilot">github.com/hastikacheddy/ai-workload-platform/platform-copilot</a>
+    </p>
+  </section>
+
+  <footer>
+    Platform Copilot — a component of the
+    <a href="https://github.com/hastikacheddy/ai-workload-platform">AI Platform</a> project.
+    Example answers are illustrative and grounded in the real document corpus, cited to it;
+    the live service produces them at query time.
+  </footer>
+
+</div>
+</body>
+</html>
